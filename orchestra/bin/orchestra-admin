@@ -75,7 +75,7 @@ get_orchestra_dir () {
         echo -e "\nErr. orchestra not installed.\n" >&2
         exit 1
     fi
-    PATH=$(echo "import orchestra, os; print os.path.dirname(os.path.realpath(orchestra.__file__))" | python)
+    PATH=$(echo "import orchestra, os; print (os.path.dirname(os.path.realpath(orchestra.__file__)))" | python)
     echo $PATH
 }
 export -f get_orchestra_dir
