@@ -218,9 +218,9 @@ function install_requirements () {
     
     # Patch dateutil
     sed -i "s/elif not isinstance(dt2, datetime.datetime):/else:/" \
-        /usr/local/lib/python2.7/dist-packages/dateutil/relativedelta.py
+        /usr/local/lib/python3.4/dist-packages/dateutil/relativedelta.py
     sed -i "s/if not type(dt1) == type(dt2): #isinstance(dt1, type(dt2)):/if not isinstance(dt2, type(dt1)):/" \
-        /usr/local/lib/python2.7/dist-packages/dateutil/relativedelta.py
+        /usr/local/lib/python3.4/dist-packages/dateutil/relativedelta.py
 }
 export -f install_requirements
 
