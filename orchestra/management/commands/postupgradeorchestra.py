@@ -80,7 +80,7 @@ class Command(BaseCommand):
             return
         
         # Post version specific operations
-        if version <= 001:
+        if version <= '001':
             pass
         
         if upgrade_notes and options.get('print_upgrade_notes'):
