@@ -2,14 +2,12 @@ from django.contrib.contenttypes.models import ContentType
 
 from orchestra.contrib.miscellaneous.models import MiscService, Miscellaneous
 from orchestra.contrib.plans.models import Plan
-from orchestra.utils.tests import random_ascii
+from orchestra.utils.tests import random_ascii, BaseTestCase
 
 from ...models import Service
 
-from . import BaseBillingTest
 
-
-class DomainBillingTest(BaseBillingTest):
+class DomainBillingTest(BaseTestCase):
     def create_domain_service(self):
         service = Service.objects.create(
             description="Domain .ES",
@@ -20,14 +18,14 @@ class DomainBillingTest(BaseBillingTest):
             is_fee=False,
             metric='',
             pricing_period=Service.BILLING_PERIOD,
-            rate_algorithm='STEP_PRICE',
+            rate_algorithm='orchestra.contrib.plans.ratings.step_price',
             on_cancel=Service.NOTHING,
             payment_style=Service.PREPAY,
             tax=0,
             nominal_price=10
         )
         plan = Plan.objects.create(is_default=True, name='Default')
-        service.rates.create(plan=plan, quantity=1, price=0)
+        service.rates.create(plan=plan, quantity=0, price=0)
         service.rates.create(plan=plan, quantity=2, price=10)
         service.rates.create(plan=plan, quantity=4, price=9)
         service.rates.create(plan=plan, quantity=6, price=6)

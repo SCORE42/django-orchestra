@@ -6,7 +6,7 @@ from django.utils.translation import ugettext_lazy as _
 from rest_framework import serializers
 
 from orchestra.contrib.databases.models import Database, DatabaseUser
-from orchestra.forms import widgets
+from orchestra.forms.widgets import SpanWidget
 from orchestra.utils.python import random_ascii
 
 from .php import PHPApp, PHPAppForm, PHPAppSerializer
@@ -30,13 +30,13 @@ class CMSAppForm(PHPAppForm):
             db_id = data.get('db_id')
             db_url = reverse('admin:databases_database_change', args=(db_id,))
             db_link = mark_safe('<a href="%s">%s</a>' % (db_url, db_name))
-            self.fields['db_name'].widget = widgets.ReadOnlyWidget(db_name, db_link)
+            self.fields['db_name'].widget = SpanWidget(original=db_name, display=db_link)
             # DB user link
             db_user = data.get('db_user')
             db_user_id = data.get('db_user_id')
             db_user_url = reverse('admin:databases_databaseuser_change', args=(db_user_id,))
             db_user_link = mark_safe('<a href="%s">%s</a>' % (db_user_url, db_user))
-            self.fields['db_user'].widget = widgets.ReadOnlyWidget(db_user, db_user_link)
+            self.fields['db_user'].widget = SpanWidget(original=db_user, display=db_user_link)
 
 
 class CMSAppSerializer(PHPAppSerializer):
@@ -51,11 +51,13 @@ class CMSApp(PHPApp):
     """ Abstract AppType with common CMS functionality """
     serializer = CMSAppSerializer
     change_form = CMSAppForm
-    change_readonly_fileds = ('db_name', 'db_user', 'password',)
+    change_readonly_fields = ('db_name', 'db_user', 'password',)
     db_type = Database.MYSQL
+    abstract = True
+    db_prefix = 'cms_'
     
     def get_db_name(self):
-        db_name = 'wp_%s_%s' % (self.instance.name, self.instance.account)
+        db_name = '%s%s_%s' % (self.db_prefix, self.instance.name, self.instance.account)
         # Limit for mysql database names
         return db_name[:65]
     
@@ -92,10 +94,10 @@ class CMSApp(PHPApp):
             user.set_password(password)
             user.save()
             db.users.add(user)
-            self.instance.data = {
+            self.instance.data.update({
                 'db_name': db_name,
                 'db_user': db_user,
                 'password': password,
                 'db_id': db.id,
                 'db_user_id': user.id,
-            }
+            })

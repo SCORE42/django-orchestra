@@ -1,15 +1,16 @@
+from functools import lru_cache
+
 from django.core.validators import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.core import services, accounts
-from orchestra.core.translations import ModelTranslation
 from orchestra.core.validators import validate_name
 from orchestra.models import queryset
+from orchestra.utils.python import import_class
 
-from . import rating
+from . import settings
 
 
 class Plan(models.Model):
@@ -64,21 +65,16 @@ class RateQuerySet(models.QuerySet):
         return self.filter(
             Q(plan__is_default=True) |
             Q(plan__contracts__account=account)
-        ).order_by('plan', 'quantity').select_related('plan')
+        ).order_by('plan', 'quantity').select_related('plan', 'service')
 
 
 class Rate(models.Model):
-    STEP_PRICE = 'STEP_PRICE'
-    MATCH_PRICE = 'MATCH_PRICE'
-    RATE_METHODS = {
-        STEP_PRICE: rating.step_price,
-        MATCH_PRICE: rating.match_price,
-    }
-    
     service = models.ForeignKey('services.Service', verbose_name=_("service"),
         related_name='rates')
-    plan = models.ForeignKey(Plan, verbose_name=_("plan"), related_name='rates')
-    quantity = models.PositiveIntegerField(_("quantity"), null=True, blank=True)
+    plan = models.ForeignKey(Plan, verbose_name=_("plan"), related_name='rates', null=True,
+        blank=True)
+    quantity = models.PositiveIntegerField(_("quantity"), null=True, blank=True,
+        help_text=_("See rate algorihm help text."))
     price = models.DecimalField(_("price"), max_digits=12, decimal_places=2)
     
     objects = RateQuerySet.as_manager()
@@ -90,18 +86,18 @@ class Rate(models.Model):
         return "{}-{}".format(str(self.price), self.quantity)
     
     @classmethod
+    @lru_cache()
     def get_methods(cls):
-        return cls.RATE_METHODS
+        return dict((method, import_class(method)) for method in settings.PLANS_RATE_METHODS)
     
     @classmethod
+    @lru_cache()
     def get_choices(cls):
         choices = []
-        for name, method in cls.RATE_METHODS.items():
+        for name, method in cls.get_methods().items():
             choices.append((name, method.verbose_name))
         return choices
-
-
-accounts.register(ContractedPlan)
-services.register(ContractedPlan, menu=False)
-
-ModelTranslation.register(Plan, ('verbose_name',))
+    
+    @classmethod
+    def get_default(cls):
+        return settings.PLANS_DEFAULT_RATE_METHOD

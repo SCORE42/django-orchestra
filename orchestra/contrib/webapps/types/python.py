@@ -1,13 +1,10 @@
-import os
 import re
-from collections import OrderedDict
 
 from django import forms
 from django.utils.translation import ugettext_lazy as _
 from rest_framework import serializers
 
 from orchestra.plugins.forms import PluginDataForm
-from orchestra.utils.functional import cached
 
 from .. import settings
 from ..options import AppOption
@@ -42,6 +39,12 @@ class PythonApp(AppType):
     serializer = PythonAppSerializer
     option_groups = (AppOption.FILESYSTEM, AppOption.PROCESS)
     icon = 'orchestra/icons/apps/Python.png'
+    
+    @classmethod
+    def get_detail_lookups(cls):
+        return {
+            'python_version': settings.WEBAPPS_PYTHON_VERSIONS,
+        }
     
     def get_directive(self):
         context = self.get_directive_context()

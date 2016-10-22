@@ -7,11 +7,14 @@ from orchestra.contrib.orchestration import ServiceController, replace
 from .. import settings
 
 
-class BSCWBackend(ServiceController):
+class BSCWController(ServiceController):
     verbose_name = _("BSCW SaaS")
     model = 'saas.SaaS'
     default_route_match = "saas.service == 'bscw'"
     actions = ('save', 'delete', 'validate_creation')
+    doc_settings = (settings,
+        ('SAAS_BSCW_BSADMIN_PATH',)
+    )
     
     def validate_creation(self, saas):
         context = self.get_context(saas)

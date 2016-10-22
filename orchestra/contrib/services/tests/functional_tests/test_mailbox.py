@@ -6,14 +6,12 @@ from freezegun import freeze_time
 from orchestra.contrib.mailboxes.models import Mailbox
 from orchestra.contrib.plans.models import Plan
 from orchestra.contrib.resources.models import Resource, ResourceData
-from orchestra.utils.tests import random_ascii
+from orchestra.utils.tests import random_ascii, BaseTestCase
 
 from ...models import Service
 
-from . import BaseBillingTest
 
-
-class MailboxBillingTest(BaseBillingTest):
+class MailboxBillingTest(BaseTestCase):
     def create_mailbox_service(self):
         service = Service.objects.create(
             description="Mailbox",
@@ -24,7 +22,7 @@ class MailboxBillingTest(BaseBillingTest):
             is_fee=False,
             metric='',
             pricing_period=Service.NEVER,
-            rate_algorithm='STEP_PRICE',
+            rate_algorithm='orchestra.contrib.plans.ratings.step_price',
             on_cancel=Service.COMPENSATE,
             payment_style=Service.PREPAY,
             tax=0,
@@ -45,7 +43,7 @@ class MailboxBillingTest(BaseBillingTest):
             is_fee=False,
             metric='max((mailbox.resources.disk.allocated or 0) -1, 0)',
             pricing_period=Service.NEVER,
-            rate_algorithm='STEP_PRICE',
+            rate_algorithm='orchestra.contrib.plans.ratings.step_price',
             on_cancel=Service.DISCOUNT,
             payment_style=Service.PREPAY,
             tax=0,
@@ -59,7 +57,7 @@ class MailboxBillingTest(BaseBillingTest):
         self.resource = Resource.objects.create(
             name='disk',
             content_type=ContentType.objects.get_for_model(Mailbox),
-            period=Resource.LAST,
+            aggregation='last',
             verbose_name='Mailbox disk',
             unit='GB',
             scale=10**9,
@@ -69,7 +67,7 @@ class MailboxBillingTest(BaseBillingTest):
         return self.resource
     
     def allocate_disk(self, mailbox, value):
-        data, __ = ResourceData.get_or_create(mailbox, self.resource)
+        data, __ = ResourceData.objects.get_or_create(mailbox, self.resource)
         data.allocated = value
         data.save()
     
@@ -157,3 +155,21 @@ class MailboxBillingTest(BaseBillingTest):
         with freeze_time(now+relativedelta(months=6)):
             bills = service.orders.bill(new_open=True, **options)
             self.assertEqual([], bills)
+    
+    def test_mailbox_second_billing(self):
+        service = self.create_mailbox_disk_service()
+        self.create_disk_resource()
+        account = self.create_account()
+        mailbox = self.create_mailbox(account=account)
+        now = timezone.now()
+        bp = now.date() + relativedelta(years=1)
+        options = dict(billing_point=bp, fixed_point=True)
+        bills = service.orders.bill(**options)
+        
+        with freeze_time(now+relativedelta(years=1, months=1)):
+            mailbox = self.create_mailbox(account=account)
+            alt_now = timezone.now()
+            bp = alt_now.date() + relativedelta(years=1)
+            options = dict(billing_point=bp, fixed_point=True)
+            bills = service.orders.bill(**options)
+            print(bills)

@@ -3,22 +3,27 @@ import re
 from urllib.parse import parse_qsl
 
 from django import forms
-from django.conf.urls import patterns, url
+from django.apps import apps
+from django.conf.urls import url
 from django.contrib import admin, messages
-from django.contrib.admin.util import unquote
+from django.contrib.admin.utils import unquote
 from django.contrib.auth import admin as auth
+from django.core.urlresolvers import reverse
 from django.http import HttpResponseRedirect
+from django.templatetags.static import static
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.admin import ExtendedModelAdmin, ChangePasswordAdminMixin
 from orchestra.admin.actions import SendEmail
-from orchestra.admin.utils import wrap_admin_view, admin_link, set_url_query, change_url
+from orchestra.admin.utils import wrap_admin_view, admin_link, set_url_query
+from orchestra.contrib.services.settings import SERVICES_IGNORE_ACCOUNT_TYPE
 from orchestra.core import services, accounts
 from orchestra.forms import UserChangeForm
+from orchestra.utils.apps import isinstalled
 
-from .actions import disable, list_contacts, service_report, delete_related_services
-from .filters import HasMainUserListFilter
+from .actions import (list_contacts, service_report, delete_related_services, disable_selected,
+    enable_selected)
 from .forms import AccountCreationForm
 from .models import Account
 
@@ -26,7 +31,7 @@ from .models import Account
 class AccountAdmin(ChangePasswordAdminMixin, auth.UserAdmin, ExtendedModelAdmin):
     list_display = ('username', 'full_name', 'type', 'is_active')
     list_filter = (
-        'type', 'is_active', HasMainUserListFilter
+        'type', 'is_active',
     )
     add_fieldsets = (
         (_("User"), {
@@ -58,11 +63,13 @@ class AccountAdmin(ChangePasswordAdminMixin, auth.UserAdmin, ExtendedModelAdmin)
     add_form = AccountCreationForm
     form = UserChangeForm
     filter_horizontal = ()
-    change_readonly_fields = ('username', 'main_systemuser_link')
+    change_readonly_fields = ('username', 'main_systemuser_link', 'is_active')
     change_form_template = 'admin/accounts/account/change_form.html'
-    actions = [disable, list_contacts, service_report, SendEmail(), delete_related_services]
-    change_view_actions = [disable, service_report]
-    list_select_related = ('billcontact',)
+    actions = (
+        disable_selected, enable_selected, delete_related_services, list_contacts, service_report,
+        SendEmail()
+    )
+    change_view_actions = (disable_selected, service_report, enable_selected)
     ordering = ()
     
     main_systemuser_link = admin_link('main_systemuser')
@@ -73,24 +80,22 @@ class AccountAdmin(ChangePasswordAdminMixin, auth.UserAdmin, ExtendedModelAdmin)
             kwargs['widget'] = forms.Textarea(attrs={'cols': 70, 'rows': 4})
         return super(AccountAdmin, self).formfield_for_dbfield(db_field, **kwargs)
     
-    def change_view(self, request, object_id, form_url='', extra_context=None):
-        if request.method == 'GET':
-            account = self.get_object(request, unquote(object_id))
-            if not account.is_active:
+    def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
+        if not add:
+            if request.method == 'GET' and not obj.is_active:
                 messages.warning(request, 'This account is disabled.')
-        context = {
-            'services': sorted(
-                [model._meta for model in services.get() if model is not Account],
-                key=lambda i: i.verbose_name_plural.lower()
-            ),
-            'accounts': sorted(
-                [model._meta for model in accounts.get() if model is not Account],
-                key=lambda i: i.verbose_name_plural.lower()
-            )
-        }
-        context.update(extra_context or {})
-        return super(AccountAdmin, self).change_view(request, object_id,
-                form_url=form_url, extra_context=context)
+            context.update({
+                'services': sorted(
+                    [model._meta for model in services.get() if model is not Account],
+                    key=lambda i: i.verbose_name_plural.lower()
+                ),
+                'accounts': sorted(
+                    [model._meta for model in accounts.get() if model is not Account],
+                    key=lambda i: i.verbose_name_plural.lower()
+                )
+            })
+        return super(AccountAdmin, self).render_change_form(
+            request, context, add, change, form_url, obj)
     
     def get_fieldsets(self, request, obj=None):
         fieldsets = super(AccountAdmin, self).get_fieldsets(request, obj)
@@ -107,7 +112,41 @@ class AccountAdmin(ChangePasswordAdminMixin, auth.UserAdmin, ExtendedModelAdmin)
             form.save_model(obj)
             form.save_related(obj)
         else:
+            if isinstalled('orchestra.contrib.orders') and isinstalled('orchestra.contrib.services'):
+                if 'type' in form.changed_data:
+                    old_type = Account.objects.get(pk=obj.pk).type
+                    new_type = form.cleaned_data['type']
+                    context = {
+                        'from': old_type.lower(),
+                        'to': new_type.lower(),
+                        'url': reverse('admin:orders_order_changelist'),
+                    }
+                    msg = ''
+                    if old_type in SERVICES_IGNORE_ACCOUNT_TYPE and new_type not in SERVICES_IGNORE_ACCOUNT_TYPE:
+                        context['url'] += '?account=%i&ignore=1' % obj.pk
+                        msg = _("Account type has been changed from <i>%(from)s</i> to <i>%(to)s</i>. "
+                                "You may want to mark <a href='%(url)s'>existing ignored orders</a> as not ignored.")
+                    elif old_type not in SERVICES_IGNORE_ACCOUNT_TYPE and new_type in SERVICES_IGNORE_ACCOUNT_TYPE:
+                        context['url'] += '?account=%i&ignore=0' % obj.pk
+                        msg = _("Account type has been changed from <i>%(from)s</i> to <i>%(to)s</i>. "
+                                "You may want to ignore <a href='%(url)s'>existing not ignored orders</a>.")
+                    if msg:
+                        messages.warning(request, mark_safe(msg % context))
             super(AccountAdmin, self).save_model(request, obj, form, change)
+    
+    def get_change_view_actions(self, obj=None):
+        views = super().get_change_view_actions(obj=obj)
+        if obj is not None:
+            if obj.is_active:
+                return [view for view in views if view.url_name != 'enable']
+            return [view for view in views if view.url_name != 'disable']
+        return views
+    
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        if 'delete_selected' in actions:
+            del actions['delete_selected']
+        return actions
 
 
 admin.site.register(Account, AccountAdmin)
@@ -117,29 +156,46 @@ class AccountListAdmin(AccountAdmin):
     """ Account list to allow account selection when creating new services """
     list_display = ('select_account', 'username', 'type', 'username')
     actions = None
+    change_list_template = 'admin/accounts/account/select_account_list.html'
     
     def select_account(self, instance):
         # TODO get query string from request.META['QUERY_STRING'] to preserve filters
         context = {
             'url': '../?account=' + str(instance.pk),
-            'name': instance.username
+            'name': instance.username,
+            'plus': '<strong style="color:green; font-size:12px">+</strong>',
         }
-        return '<a href="%(url)s">%(name)s</a>' % context
+        return _('<a href="%(url)s">%(plus)s Add to %(name)s</a>') % context
     select_account.short_description = _("account")
     select_account.allow_tags = True
-    select_account.order_admin_field = 'username'
+    select_account.admin_order_field = 'username'
     
     def changelist_view(self, request, extra_context=None):
-        original_app_label = request.META['PATH_INFO'].split('/')[-5]
-        original_model = request.META['PATH_INFO'].split('/')[-4]
+        app_label = request.META['PATH_INFO'].split('/')[-5]
+        model = request.META['PATH_INFO'].split('/')[-4]
+        model = apps.get_model(app_label, model)
+        opts = model._meta
         context = {
-            'title': _("Select account for adding a new %s") % (original_model),
-            'original_app_label': original_app_label,
-            'original_model': original_model,
+            'title': _("Select account for adding a new %s") % (opts.verbose_name),
+            'original_opts': opts,
         }
         context.update(extra_context or {})
-        return super(AccountListAdmin, self).changelist_view(request,
-                extra_context=context)
+        response = super(AccountListAdmin, self).changelist_view(request, extra_context=context)
+        if hasattr(response, 'context_data'):
+            # user has submitted a change list change, we redirect directly to the add view
+            # if there is only one result
+            query = request.GET.get('q', '')
+            if query:
+                try:
+                    account = Account.objects.get(username=query)
+                except Account.DoesNotExist:
+                    pass
+                else:
+                    return HttpResponseRedirect('../?account=%i' % account.pk)
+            queryset = response.context_data['cl'].queryset
+            if len(queryset) == 1:
+                return HttpResponseRedirect('../?account=%i' % queryset[0].pk)
+        return response
 
 
 class AccountAdminMixin(object):
@@ -153,19 +209,18 @@ class AccountAdminMixin(object):
     
     def display_active(self, instance):
         if not instance.is_active:
-            return '<img src="/static/admin/img/icon-no.gif" alt="False">'
+            return '<img src="%s" alt="False">' % static('admin/img/icon-no.svg')
         elif not instance.account.is_active:
             msg = _("Account disabled")
-            return '<img src="/static/admin/img/icon-unknown.gif" alt="False" title="%s">' % msg
-        return '<img src="/static/admin/img/icon-yes.gif" alt="True">'
+            return '<img style="width:13px" src="%s" alt="False" title="%s">' % (static('admin/img/inline-delete.svg'), msg)
+        return '<img src="%s" alt="False">' % static('admin/img/icon-yes.svg')
     display_active.short_description = _("active")
     display_active.allow_tags = True
     display_active.admin_order_field = 'is_active'
     
     def account_link(self, instance):
         account = instance.account if instance.pk else self.account
-        url = change_url(account)
-        return '<a href="%s">%s</a>' % (url, str(account))
+        return admin_link()(account)
     account_link.short_description = _("account")
     account_link.allow_tags = True
     account_link.admin_order_field = 'account__username'
@@ -178,13 +233,19 @@ class AccountAdminMixin(object):
         except KeyError:
             pass
         else:
-            help_text = (
-                "Designates whether this account should be treated as active. "
-                "Unselect this instead of deleting accounts."
-            )
+            opts = self.model._meta
+            help_text = _(
+                "Designates whether this %(name)s should be treated as active. "
+                "Unselect this instead of deleting %(plural_name)s."
+            ) % {
+                'name': opts.verbose_name,
+                'plural_name': opts.verbose_name_plural,
+            }
             if obj and not obj.account.is_active:
                 help_text += "<br><b style='color:red;'>This user's account is dissabled</b>"
             field.help_text = _(help_text)
+        # Not available in POST
+        form.initial_account = self.get_changeform_initial_data(request).get('account')
         return form
     
     def get_fields(self, request, obj=None):
@@ -216,19 +277,30 @@ class AccountAdminMixin(object):
             if self.account:
                 # Hack widget render in order to append ?account=id to the add url
                 old_render = formfield.widget.render
+                
                 def render(*args, **kwargs):
                     output = old_render(*args, **kwargs)
                     output = output.replace('/add/"', '/add/?account=%s"' % self.account.pk)
-                    output = re.sub(r'/add/\?([^".]*)"', r'/add/?\1&account=%s"' % self.account.pk, output)
+                    with_qargs = r'/add/?\1&account=%s"' % self.account.pk
+                    output = re.sub(r'/add/\?([^".]*)"', with_qargs, output)
                     return mark_safe(output)
+                
                 formfield.widget.render = render
                 # Filter related object by account
                 formfield.queryset = formfield.queryset.filter(account=self.account)
+                # Apply heuristic order by
+                if not formfield.queryset.query.order_by:
+                    related_fields = [f.name for f in db_field.related_model._meta.get_fields()]
+                    if 'name' in related_fields:
+                        formfield.queryset = formfield.queryset.order_by('name')
+                    elif 'username' in related_fields:
+                        formfield.queryset = formfield.queryset.order_by('username')
         elif db_field.name == 'account':
             if self.account:
                 formfield.initial = self.account.pk
             elif Account.objects.count() == 1:
                 formfield.initial = 1
+            formfield.queryset = formfield.queryset.order_by('username')
         return formfield
     
     def get_formset(self, request, obj=None, **kwargs):
@@ -257,8 +329,8 @@ class AccountAdminMixin(object):
             'account_opts': Account._meta,
         }
         context.update(extra_context or {})
-        return super(AccountAdminMixin, self).changeform_view(request,
-                object_id=object_id, form_url=form_url, extra_context=context)
+        return super(AccountAdminMixin, self).changeform_view(
+            request, object_id, form_url=form_url, extra_context=context)
     
     def changelist_view(self, request, extra_context=None):
         account_id = request.GET.get('account')
@@ -282,8 +354,7 @@ class AccountAdminMixin(object):
                 request_copy.pop('account')
                 request.GET = request_copy
         context.update(extra_context or {})
-        return super(AccountAdminMixin, self).changelist_view(request,
-                extra_context=context)
+        return super(AccountAdminMixin, self).changelist_view(request, extra_context=context)
 
 
 class SelectAccountAdminMixin(AccountAdminMixin):
@@ -294,7 +365,7 @@ class SelectAccountAdminMixin(AccountAdminMixin):
             account = self.account
         else:
             account = Account.objects.get(pk=request.GET['account'])
-        [ setattr(inline, 'account', account) for inline in inlines ]
+        [setattr(inline, 'account', account) for inline in inlines]
         return inlines
     
     def get_urls(self):
@@ -304,12 +375,12 @@ class SelectAccountAdminMixin(AccountAdminMixin):
         opts = self.model._meta
         info = opts.app_label, opts.model_name
         account_list = AccountListAdmin(Account, admin_site).changelist_view
-        select_urls = patterns("",
-            url("/select-account/$",
+        select_urls = [
+            url("add/select-account/$",
                 wrap_admin_view(self, account_list),
                 name='%s_%s_select_account' % info),
-        )
-        return select_urls + urls 
+        ]
+        return select_urls + urls
     
     def add_view(self, request, form_url='', extra_context=None):
         """ Redirects to select account view if required """
@@ -327,12 +398,13 @@ class SelectAccountAdminMixin(AccountAdminMixin):
                 context = {
                     'title': _("Add %s for %s") % (opts.verbose_name, self.account.username),
                     'from_account': bool(from_account_id),
+                    'from_select': True,
                     'account': self.account,
                     'account_opts': Account._meta,
                 }
                 context.update(extra_context or {})
-                return super(AccountAdminMixin, self).add_view(request,
-                        form_url=form_url, extra_context=context)
+                return super(AccountAdminMixin, self).add_view(
+                    request, form_url=form_url, extra_context=context)
         return HttpResponseRedirect('./select-account/?%s' % request.META['QUERY_STRING'])
     
     def save_model(self, request, obj, form, change):

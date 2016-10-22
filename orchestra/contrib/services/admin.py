@@ -1,5 +1,5 @@
 from django import forms
-from django.conf.urls import patterns, url
+from django.conf.urls import url
 from django.contrib import admin
 from django.core.urlresolvers import reverse
 from django.template.response import TemplateResponse
@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.admin import ChangeViewActionsMixin
-from orchestra.admin.filters import UsedContentTypeFilter
+from orchestra.admin.actions import disable, enable
 from orchestra.core import services
 
 from .actions import update_orders, view_help, clone
@@ -18,12 +18,15 @@ class ServiceAdmin(ChangeViewActionsMixin, admin.ModelAdmin):
     list_display = (
         'description', 'content_type', 'handler_type', 'num_orders', 'is_active'
     )
-    list_filter = ('is_active', 'handler_type', UsedContentTypeFilter)
+    list_filter = (
+        'is_active', 'handler_type', 'is_fee',
+        ('content_type', admin.RelatedOnlyFieldListFilter),
+    )
     fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('description', 'content_type', 'match', 'handler_type',
-                       'ignore_superusers', 'is_active')
+            'fields': ('description', 'content_type', 'match', 'periodic_update',
+                       'handler_type', 'ignore_superusers', 'is_active')
         }),
         (_("Billing options"), {
             'classes': ('wide',),
@@ -36,7 +39,7 @@ class ServiceAdmin(ChangeViewActionsMixin, admin.ModelAdmin):
                        'on_cancel', 'payment_style', 'tax', 'nominal_price')
         }),
     )
-    actions = (update_orders, clone)
+    actions = (update_orders, clone, disable, enable)
     change_view_actions = actions + (view_help,)
     change_form_template = 'admin/services/service/change_form.html'
     
@@ -45,12 +48,12 @@ class ServiceAdmin(ChangeViewActionsMixin, admin.ModelAdmin):
         urls = super(ServiceAdmin, self).get_urls()
         admin_site = self.admin_site
         opts = self.model._meta
-        return patterns('',
+        return [
             url('^add/help/$',
                 admin_site.admin_view(self.help_view),
                 name='%s_%s_help' % (opts.app_label, opts.model_name)
             )
-        ) + urls
+        ] + urls
     
     def formfield_for_dbfield(self, db_field, **kwargs):
         """ Improve performance of account field and filter by account """
@@ -65,7 +68,7 @@ class ServiceAdmin(ChangeViewActionsMixin, admin.ModelAdmin):
     def num_orders(self, service):
         num = service.orders__count
         url = reverse('admin:orders_order_changelist')
-        url += '?service=%i&is_active=True' % service.pk
+        url += '?service__id__exact=%i&is_active=True' % service.pk
         return '<a href="%s">%d</a>' % (url, num)
     num_orders.short_description = _("Orders")
     num_orders.admin_order_field = 'orders__count'

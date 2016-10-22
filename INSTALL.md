@@ -5,7 +5,7 @@ Django-orchestra ships with a set of management commands for automating some of 
 
 These commands are meant to be run within a **clean** Debian-like distribution, you should be specially careful while following this guide on a customized system.
 
-Django-orchestra can be installed on any Linux system, however it is **strongly recommended** to chose the reference platform for your deployment (Debian 8.0 jessie and Python 3.4).
+Django-orchestra can be manually installed on any Linux system, however it is **strongly recommended** to chose the reference platform for your deployment (Debian 8.0 Jessie and Python 3.4).
 
 
 1. Create a system user for running Orchestra
@@ -19,7 +19,7 @@ Django-orchestra can be installed on any Linux system, however it is **strongly 
 2. Install django-orchestra's source code
     ```bash
     sudo apt-get install python3-pip
-    sudo pip install django-orchestra==dev
+    sudo pip3 install http://git.io/django-orchestra-dev
     ```
 
 3. Install requirements
@@ -32,32 +32,48 @@ Django-orchestra can be installed on any Linux system, however it is **strongly 
     cd ~orchestra
     orchestra-admin startproject <project_name> # e.g. panel
     cd <project_name>
-    sudo touch /var/log/orchestra.log
-    sudo chown orchestra /var/log/orchestra.log
     ```
 
 5. Create and configure a Postgres database
     ```bash
+    sudo apt-get install python3-psycopg2 postgresql
     sudo python3 manage.py setuppostgres --db_password <password>
-    python3 manage.py syncdb
     python3 manage.py migrate
     ```
 
-7. Configure celeryd
+6. Configure periodic execution of tasks (choose one)
+    1. Use cron (recommended)
+        ```bash
+        python3 manage.py setupcronbeat
+        python3 manage.py syncperiodictasks
+        ```
+
+    2. Use celeryd
+        ```bash
+        sudo apt-get install rabbitmq-server
+        sudo python3 manage.py setupcelery --username orchestra
+        ```
+
+7. (Optional) Configure logging
     ```bash
-    sudo python3 manage.py setupcelery --username orchestra
+    sudo python3 manage.py setuplog
     ```
 
 8. Configure the web server:
     ```bash
     python3 manage.py collectstatic --noinput
     sudo apt-get install nginx-full uwsgi uwsgi-plugin-python3
-    sudo python3 manage.py setupnginx
+    sudo python3 manage.py setupnginx --user orchestra
+    ```
+
+6. See the Django deployment checklist
+    ```bash
+    python3 manage.py check --deploy
     ```
 
 9. Start all services:
     ```bash
-    sudo python manage.py startservices
+    sudo python3 manage.py startservices
     ```
 
 
@@ -77,7 +93,6 @@ Additionally the following command can be used in order to determine the current
 ```bash
 python3 manage.py orchestraversion
 ```
-
 
 
 Extra

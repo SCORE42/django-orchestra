@@ -2,7 +2,6 @@ import hashlib
 import os
 import re
 
-from django.core.management.base import CommandError
 from django.core.validators import ValidationError, EmailValidator
 from django.utils.translation import ugettext_lazy as _
 
@@ -50,19 +49,21 @@ def validate_forward(value):
 
 
 def validate_sieve(value):
-    sieve_name = '%s.sieve' % hashlib.md5(value).hexdigest()
-    path = os.path.join(settings.MAILBOXES_SIEVETEST_PATH, sieve_name)
-    with open(path, 'wb') as f:
+    sieve_name = '%s.sieve' % hashlib.md5(value.encode('utf8')).hexdigest()
+    test_path = os.path.join(settings.MAILBOXES_SIEVETEST_PATH, sieve_name)
+    with open(test_path, 'w') as f:
         f.write(value)
     context = {
         'orchestra_root': paths.get_orchestra_dir()
     }
     sievetest = settings.MAILBOXES_SIEVETEST_BIN_PATH % context
     try:
-        test = run(' '.join([sievetest, path, '/dev/null']), display=False)
-    except CommandError:
+        test = run(' '.join([sievetest, test_path, '/dev/null']), silent=True)
+    finally:
+        os.unlink(test_path)
+    if test.exit_code:
         errors = []
-        for line in test.stderr.splitlines():
+        for line in test.stderr.decode('utf8').splitlines():
             error = re.match(r'^.*(line\s+[0-9]+:.*)', line)
             if error:
                 errors += error.groups()

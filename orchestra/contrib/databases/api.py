@@ -8,13 +8,13 @@ from .serializers import DatabaseSerializer, DatabaseUserSerializer
 
 
 class DatabaseViewSet(LogApiMixin, AccountApiMixin, viewsets.ModelViewSet):
-    model = Database
+    queryset = Database.objects.prefetch_related('users').all()
     serializer_class = DatabaseSerializer
     filter_fields = ('name',)
 
 
 class DatabaseUserViewSet(LogApiMixin, AccountApiMixin, SetPasswordApiMixin, viewsets.ModelViewSet):
-    model = DatabaseUser
+    queryset = DatabaseUser.objects.prefetch_related('databases').all()
     serializer_class = DatabaseUserSerializer
     filter_fields = ('username',)
 

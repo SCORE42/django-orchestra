@@ -2,8 +2,6 @@ from django.db import models
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.core import services
-from orchestra.core.translations import ModelTranslation
 from orchestra.core.validators import validate_name
 from orchestra.models.fields import NullableCharField
 
@@ -33,6 +31,14 @@ class MiscService(models.Model):
     
     def get_verbose_name(self):
         return self.verbose_name or self.name
+    
+    def disable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
+    
+    def enable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
 
 
 class Miscellaneous(models.Model):
@@ -41,7 +47,7 @@ class Miscellaneous(models.Model):
     account = models.ForeignKey('accounts.Account', verbose_name=_("account"),
         related_name='miscellaneous')
     identifier = NullableCharField(_("identifier"), max_length=256, null=True, unique=True,
-        help_text=_("A unique identifier for this service."))
+        db_index=True, help_text=_("A unique identifier for this service."))
     description = models.TextField(_("description"), blank=True)
     amount = models.PositiveIntegerField(_("amount"), default=1)
     is_active = models.BooleanField(_("active"), default=True,
@@ -61,6 +67,14 @@ class Miscellaneous(models.Model):
     def get_description(self):
         return ' '.join((str(self.amount), self.service.description or self.service.verbose_name))
     
+    def disable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
+    
+    def enable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
+    
     @cached_property
     def service_class(self):
         return self.service
@@ -69,8 +83,3 @@ class Miscellaneous(models.Model):
         if self.identifier:
             self.identifier = self.identifier.strip()
         self.description = self.description.strip()
-
-
-services.register(Miscellaneous)
-
-ModelTranslation.register(MiscService, ('verbose_name',))

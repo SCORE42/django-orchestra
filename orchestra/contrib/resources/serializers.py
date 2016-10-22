@@ -1,22 +1,22 @@
 from rest_framework import serializers
 
 from orchestra.api import router
-from orchestra.utils import database_ready
+from orchestra.utils.db import database_ready
 
 from .models import Resource, ResourceData
 
 
 class ResourceSerializer(serializers.ModelSerializer):
-    name = serializers.SerializerMethodField('get_name')
-    unit = serializers.Field()
+    name = serializers.SerializerMethodField()
+    unit = serializers.ReadOnlyField()
     
     class Meta:
         model = ResourceData
         fields = ('name', 'used', 'allocated', 'unit')
         read_only_fields = ('used',)
     
-    def from_native(self, raw_data, files=None):
-        data = super(ResourceSerializer, self).from_native(raw_data, files=files)
+    def to_internal_value(self, raw_data):
+        data = super(ResourceSerializer, self).to_internal_value(raw_data)
         if not data.resource_id:
             data.resource = Resource.objects.get(name=raw_data['name'])
         return data
@@ -33,13 +33,18 @@ class ResourceSerializer(serializers.ModelSerializer):
 def insert_resource_serializers():
     # clean previous state
     for related in Resource._related:
-        viewset = router.get_viewset(related)
-        fields = list(viewset.serializer_class.Meta.fields)
         try:
-            fields.remove('resources')
-        except ValueError:
+            viewset = router.get_viewset(related)
+        except KeyError:
+            # API viewset not registered
             pass
-        viewset.serializer_class.Meta.fields = fields
+        else:
+            fields = list(viewset.serializer_class.Meta.fields)
+            try:
+                fields.remove('resources')
+            except ValueError:
+                pass
+            viewset.serializer_class.Meta.fields = fields
     # Create nested serializers on target models
     for ct, resources in Resource.objects.group_by('content_type').items():
         model = ct.model_class()
@@ -48,9 +53,8 @@ def insert_resource_serializers():
         except KeyError:
             continue
         # TODO this is a fucking workaround, reimplement this on the proper place
-        def validate_resources(self, attrs, source, _resources=resources):
+        def validate_resources(self, posted, _resources=resources):
             """ Creates missing resources """
-            posted = attrs.get(source, [])
             result = []
             resources = list(_resources)
             for data in posted:
@@ -67,24 +71,23 @@ def insert_resource_serializers():
                 if not resource.on_demand:
                     data.allocated = resource.default_allocation
                 result.append(data)
-            attrs[source] = result
-            return attrs
+            return result
         viewset = router.get_viewset(model)
         viewset.serializer_class.validate_resources = validate_resources
         
-        old_metadata = viewset.metadata
-        def metadata(self, request, resources=resources):
+        old_options = viewset.options
+        def options(self, request, resources=resources):
             """ Provides available resources description """
-            ret = old_metadata(self, request)
-            ret['available_resources'] = [
+            metadata = old_options(self, request)
+            metadata.data['available_resources'] = [
                 {
                     'name': resource.name,
                     'on_demand': resource.on_demand,
                     'default_allocation': resource.default_allocation
                 } for resource in resources
             ]
-            return ret
-        viewset.metadata = metadata
+            return metadata
+        viewset.options = options
 
 if database_ready():
     insert_resource_serializers()

@@ -7,7 +7,7 @@ class AccountSerializer(serializers.HyperlinkedModelSerializer):
     class Meta:
         model = Account
         fields = (
-            'url', 'username', 'type', 'language', 'short_name', 'full_name', 'date_joined',
+            'url', 'id', 'username', 'type', 'language', 'short_name', 'full_name', 'date_joined',
             'is_active'
         )
 
@@ -15,11 +15,13 @@ class AccountSerializer(serializers.HyperlinkedModelSerializer):
 class AccountSerializerMixin(object):
     def __init__(self, *args, **kwargs):
         super(AccountSerializerMixin, self).__init__(*args, **kwargs)
-        self.account = None
+        self.account = self.get_account()
+    
+    def get_account(self):
         request = self.context.get('request')
         if request:
-            self.account = request.user
+            return request.user
     
-    def save_object(self, obj, **kwargs):
-        obj.account = self.account
-        super(AccountSerializerMixin, self).save_object(obj, **kwargs)
+    def create(self, validated_data):
+        validated_data['account'] = self.get_account()
+        return super(AccountSerializerMixin, self).create(validated_data)

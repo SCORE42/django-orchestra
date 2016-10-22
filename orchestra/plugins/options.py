@@ -9,12 +9,16 @@ class Plugin(object):
     change_form = None
     form = None
     serializer = None
-    change_readonly_fileds = ()
+    change_readonly_fields = ()
     plugin_field = None
     
     def __init__(self, instance=None):
         # Related model instance of this plugin
         self.instance = instance
+        if self.form is None:
+            from .forms import PluginForm
+            self.form = PluginForm
+        super().__init__()
     
     @classmethod
     def get_name(cls):
@@ -52,8 +56,12 @@ class Plugin(object):
         return sorted(choices, key=lambda e: e[1])
     
     @classmethod
-    def get_change_readonly_fileds(cls):
-        return cls.change_readonly_fileds
+    def get_change_readonly_fields(cls):
+        return cls.change_readonly_fields
+    
+    @classmethod
+    def get_class_path(cls):
+        return '.'.join((cls.__module__, cls.__name__))
     
     def clean_data(self):
         """ model clean, uses cls.serizlier by default """
@@ -87,6 +95,13 @@ class PluginModelAdapter(Plugin):
     """ Adapter class for using model classes as plugins """
     model = None
     name_field = None
+    form = None
+    
+    def __init__(self, instance=None):
+        if self.form is None:
+            from .forms import PluginModelAdapterForm
+            self.form = PluginModelAdapterForm
+        super().__init__(instance)
     
     @classmethod
     def get_plugins(cls):

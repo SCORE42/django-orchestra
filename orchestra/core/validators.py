@@ -1,53 +1,88 @@
+import logging
 import re
+from ipaddress import ip_address
 
-import crack
 import phonenumbers
-
 from django.core import validators
 from django.core.exceptions import ValidationError
+from django.utils.deconstruct import deconstructible
 from django.utils.translation import ugettext_lazy as _
-from IPy import IP
 
 from ..utils.python import import_class
 
 
-def all_valid(kwargs):
+logger = logging.getLogger(__name__)
+
+
+def all_valid(*args):
     """ helper function to merge multiple validators at once """
-    errors = {}
-    for field, validator in kwargs.items():
-        try:
-            validator[0](*validator[1:])
-        except ValidationError as error:
-            errors[field] = error
+    if len(args) == 1:
+        # Dict
+        errors = {}
+        kwargs = args[0]
+        for field, validator in kwargs.items():
+            try:
+                validator[0](*validator[1:])
+            except ValidationError as error:
+                errors[field] = error
+    else:
+        # List
+        errors = []
+        value, validators = args
+        for validator in validators:
+            try:
+                validator(value)
+            except ValidationError as error:
+                errors.append(error)
     if errors:
         raise ValidationError(errors)
 
 
+@deconstructible
+class OrValidator(object):
+    """
+    Run validators with an OR logic
+    """
+    def __init__(self, *validators):
+        self.validators = validators
+    
+    def __call__(self, value):
+        msg = []
+        for validator in self.validators:
+            try:
+                validator(value)
+            except ValidationError as err:
+                msg.append(str(err))
+            else:
+                return
+        raise ValidationError(' OR '.join(msg))
+
+
 def validate_ipv4_address(value):
-    msg = _("%s is not a valid IPv4 address") % value
+    msg = _("Not a valid IPv4 address")
     try:
-        ip = IP(value)
-    except:
+        ip = ip_address(value)
+    except ValueError:
         raise ValidationError(msg)
-    if ip.version() != 4:
+    if ip.version != 4:
         raise ValidationError(msg)
 
 
 def validate_ipv6_address(value):
-    msg = _("%s is not a valid IPv6 address") % value
+    msg = _("Not a valid IPv6 address")
     try:
-        ip = IP(value)
-    except:
+        ip = ip_address(value)
+    except ValueError:
         raise ValidationError(msg)
-    if ip.version() != 6:
+    if ip.version != 6:
         raise ValidationError(msg)
 
 
 def validate_ip_address(value):
-    msg = _("%s is not a valid IP address") % value
+    msg = _("Not a valid IP address")
     try:
-        IP(value)
-    except:
+        ip_address(value)
+    except ValueError:
         raise ValidationError(msg)
 
 
@@ -89,6 +124,14 @@ def validate_username(value):
 
 def validate_password(value):
     try:
+        import crack
+    except:
+        try:
+            import cracklib as crack
+        except:
+            logger.error("Can not validate password. Cracklib bindings are not installed.")
+            return
+    try:
         crack.VeryFascistCheck(value)
     except ValueError as message:
         raise ValidationError("Password %s." % str(message)[3:])
@@ -96,7 +139,7 @@ def validate_password(value):
 
 def validate_url_path(value):
     if not re.match(r'^\/[/.a-zA-Z0-9-_]*$', value):
-        raise ValidationError(_('"%s" is not a valid URL path.') % value)
+        raise ValidationError(_('"%s" is not a valid URL-path.') % value)
 
 
 def validate_vat(vat, country):

@@ -1,6 +1,5 @@
 {% extends "admin/base_site.html" %}
 {% load i18n l10n %}
-{% load url from future %}
 {% load admin_urls static utils %}
 
 {% block extrastyle %}
@@ -30,10 +29,14 @@
   <div>
     <div style="margin:20px;">
     <p>{{ content_message | safe }}</p>
-    <ul>{{ display_objects | unordered_list }}</ul>
+    {% block display_objects %}
+        <ul>{{ display_objects | unordered_list }}</ul>
+    {% endblock %}
     <form action="" method="post">{% csrf_token %}
+    {% block form %}
     {% if form %}
         <fieldset class="module aligned">
+        {{ form.non_field_errors }}
         {% for field in form %}
         <div class="form-row ">
             <div >
@@ -49,9 +52,12 @@
         {% endfor %}
         </fieldset>
     {% endif %}
+    {% endblock %}
+    {% block formset %}
     {% if formset %}
         {{ formset.as_admin }}
     {% endif %}
+    {% endblock %}
     <div>
     {% for obj in queryset %}
     <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk|unlocalize }}" />

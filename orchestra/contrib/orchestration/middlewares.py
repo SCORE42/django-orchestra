@@ -1,5 +1,6 @@
 from threading import local
 
+from django.contrib.admin.models import LogEntry
 from django.core.urlresolvers import resolve
 from django.db import transaction
 from django.db.models.signals import pre_delete, post_save, m2m_changed
@@ -10,18 +11,19 @@ from orchestra.utils.python import OrderedSet
 
 from . import manager, Operation
 from .helpers import message_user
-from .models import BackendLog
+from .models import BackendLog, BackendOperation
 
 
 @receiver(post_save, dispatch_uid='orchestration.post_save_collector')
 def post_save_collector(sender, *args, **kwargs):
-    if sender not in [BackendLog, Operation]:
+    if sender not in (BackendLog, BackendOperation, LogEntry):
+        instance = kwargs.get('instance')
         OperationsMiddleware.collect(Operation.SAVE, **kwargs)
 
 
 @receiver(pre_delete, dispatch_uid='orchestration.pre_delete_collector')
 def pre_delete_collector(sender, *args, **kwargs):
-    if sender not in [BackendLog, Operation]:
+    if sender not in (BackendLog, BackendOperation, LogEntry):
         OperationsMiddleware.collect(Operation.DELETE, **kwargs)
 
 
@@ -79,7 +81,10 @@ class OperationsMiddleware(object):
         type(self).thread_locals.transaction.__enter__()
     
     def leave_transaction_management(self, exception=None):
-        type(self).thread_locals.transaction.__exit__(exception, None, None)
+        locals = type(self).thread_locals
+        if hasattr(locals, 'transaction'):
+            # Don't fucking know why sometimes thread_locals does not contain a transaction
+            locals.transaction.__exit__(exception, None, None)
     
     def process_request(self, request):
         """ Store request on a thread local variable """
@@ -92,18 +97,18 @@ class OperationsMiddleware(object):
     
     def process_response(self, request, response):
         """ Processes pending backend operations """
-        if not isinstance(response, HttpResponseServerError):
-            operations = type(self).get_pending_operations()
+        if response.status_code != 500:
+            operations = self.get_pending_operations()
             if operations:
                 try:
-                    scripts, block = manager.generate(operations)
+                    scripts, serialize = manager.generate(operations)
                 except Exception as exception:
                     self.leave_transaction_management(exception)
                     raise
                 # We commit transaction just before executing operations
                 # because here is when IntegrityError show up
                 self.leave_transaction_management()
-                logs = manager.execute(scripts, block=block)
+                logs = manager.execute(scripts, serialize=serialize)
                 if logs and resolve(request.path).app_name == 'admin':
                     message_user(request, logs)
                 return response

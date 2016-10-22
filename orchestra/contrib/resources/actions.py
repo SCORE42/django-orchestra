@@ -1,5 +1,5 @@
 from django.core.urlresolvers import reverse
-from django.shortcuts import redirect
+from django.shortcuts import redirect, render
 from django.utils.safestring import mark_safe
 from django.utils.translation import ungettext, ugettext_lazy as _
 
@@ -12,10 +12,11 @@ def run_monitor(modeladmin, request, queryset):
     for resource in queryset:
         rlogs = resource.monitor()
         if not async:
-            logs = logs.union(set([str(rlog.pk) for rlog in rlogs]))
+            logs = logs.union(set([str(log.pk) for log in rlogs]))
         modeladmin.log_change(request, resource, _("Run monitors"))
     if async:
         num = len(queryset)
+        # TODO listfilter by uuid: task.request.id + ?task_id__in=ids
         link = reverse('admin:djcelery_taskstate_changelist')
         msg = ungettext(
             _("One selected resource has been <a href='%s'>scheduled for monitoring</a>.") % link,
@@ -37,3 +38,10 @@ def run_monitor(modeladmin, request, queryset):
     if referer:
         return redirect(referer)
 run_monitor.url_name = 'monitor'
+
+
+def show_history(modeladmin, request, queryset):
+    context = {
+        'ids': ','.join(map(str, queryset.values_list('id', flat=True))),
+    }
+    return render(request, 'admin/resources/resourcedata/history.html', context)

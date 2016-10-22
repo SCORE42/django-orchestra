@@ -1,6 +1,7 @@
 from django.contrib import admin, messages
 from django.core.urlresolvers import reverse
 from django.db import transaction
+from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.utils.translation import ungettext, ugettext_lazy as _
 from django.shortcuts import render
@@ -29,7 +30,10 @@ class BillSelectedOrders(object):
             'queryset': queryset,
             'action_checkbox_name': admin.helpers.ACTION_CHECKBOX_NAME,
         }
-        return self.set_options(request)
+        ret = self.set_options(request)
+        del(self.queryset)
+        del(self.context)
+        return ret
     
     def set_options(self, request):
         form = BillSelectedOptionsForm()
@@ -89,9 +93,8 @@ class BillSelectedOrders(object):
                     url = change_url(bills[0])
                 else:
                     url = reverse('admin:bills_bill_changelist')
-                    ids = ','.join([str(bill.id) for bill in bills])
+                    ids = ','.join([str(b.id) for b in bills])
                     url += '?id__in=%s' % ids
-                num = len(bills)
                 msg = ungettext(
                     '<a href="{url}">One bill</a> has been created.',
                     '<a href="{url}">{num} bills</a> have been created.',
@@ -100,11 +103,18 @@ class BillSelectedOrders(object):
                 self.modeladmin.message_user(request, msg, messages.INFO)
             return
         bills = self.queryset.bill(commit=False, **self.options)
+        bills_with_total = []
+        for account, lines in bills:
+            total = 0
+            for line in lines:
+                discount = sum([discount.total for discount in line.discounts])
+                total += line.subtotal + discount
+            bills_with_total.append((account, total, lines))
         self.context.update({
             'title': _("Confirmation for billing selected orders"),
             'step': 3,
             'form': form,
-            'bills': bills,
+            'bills': sorted(bills_with_total, key=lambda i: -i[1]),
         })
         return render(request, self.template, self.context)
 
@@ -136,3 +146,29 @@ def mark_as_not_ignored(modeladmin, request, queryset):
         num)
     modeladmin.message_user(request, msg)
 
+
+def report(modeladmin, request, queryset):
+    services = {}
+    totals = [0, 0, None, 0]
+    now = timezone.now().date()
+    for order in queryset.select_related('service'):
+        name = order.service.description
+        active, cancelled = (1, 0) if not order.cancelled_on or order.cancelled_on > now else (0, 1)
+        try:
+            info = services[name]
+        except KeyError:
+            nominal_price = order.service.nominal_price
+            info = [active, cancelled, nominal_price, 1]
+            services[name] = info
+        else:
+            info[0] += active
+            info[1] += cancelled
+            info[3] += 1
+        totals[0] += active
+        totals[1] += cancelled
+        totals[3] += 1
+    context = {
+        'services': sorted(services.items(), key=lambda n: -n[1][0]),
+        'totals': totals,
+    }
+    return render(request, 'admin/orders/order/report.html', context)

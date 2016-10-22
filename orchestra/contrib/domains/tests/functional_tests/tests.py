@@ -114,7 +114,7 @@ class DomainTestMixin(object):
             'server_addr': server_addr
         }
         dig_soa = 'dig @%(server_addr)s %(domain_name)s|grep "\sSOA\s"'
-        soa = run(dig_soa % context, error_codes=[0,1]).stdout
+        soa = run(dig_soa % context, valid_codes=(0, 1)).stdout
         if soa:
             soa = soa.split()
             self.assertEqual('IN', soa[2])
@@ -310,10 +310,10 @@ class Bind9BackendMixin(object):
     
     def add_route(self):
         master = Server.objects.create(name=self.MASTER_SERVER, address=self.MASTER_SERVER_ADDR)
-        backend = backends.Bind9MasterDomainBackend.get_name()
+        backend = backends.Bind9MasterDomainController.get_name()
         Route.objects.create(backend=backend, match=True, host=master)
         slave = Server.objects.create(name=self.SLAVE_SERVER, address=self.SLAVE_SERVER_ADDR)
-        backend = backends.Bind9SlaveDomainBackend.get_name()
+        backend = backends.Bind9SlaveDomainController.get_name()
         Route.objects.create(backend=backend, match=True, host=slave)
 
 

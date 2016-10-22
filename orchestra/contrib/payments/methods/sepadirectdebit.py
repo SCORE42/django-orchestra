@@ -1,8 +1,6 @@
 import datetime
-import lxml.builder
+import logging
 import os
-from lxml import etree
-from lxml.builder import E
 from io import StringIO
 
 from django import forms
@@ -17,16 +15,24 @@ from .. import settings
 from .options import PaymentMethod
 
 
+logger = logging.getLogger(__name__)
+
+try:
+    import lxml
+except ImportError:
+    logger.error('Error loading lxml, module not installed.')
+
+
 class SEPADirectDebitForm(PluginDataForm):
     iban = forms.CharField(label='IBAN',
-            widget=forms.TextInput(attrs={'size': '50'}))
+        widget=forms.TextInput(attrs={'size': '50'}))
     name = forms.CharField(max_length=128, label=_("Name"),
-            widget=forms.TextInput(attrs={'size': '50'}))
+        widget=forms.TextInput(attrs={'size': '50'}))
 
 
 class SEPADirectDebitSerializer(serializers.Serializer):
     iban = serializers.CharField(label='IBAN', validators=[IBANValidator()],
-            min_length=min(IBAN_COUNTRY_CODE_LENGTH.values()), max_length=34)
+        min_length=min(IBAN_COUNTRY_CODE_LENGTH.values()), max_length=34)
     name = serializers.CharField(label=_("Name"), max_length=128)
     
     def validate(self, data):
@@ -39,14 +45,22 @@ class SEPADirectDebit(PaymentMethod):
     verbose_name = _("SEPA Direct Debit")
     label_field = 'name'
     number_field = 'iban'
-    process_credit = True
+    allow_recharge = True
     form = SEPADirectDebitForm
     serializer = SEPADirectDebitSerializer
     due_delta = datetime.timedelta(days=5)
+    state_help = {
+        'WAITTING_PROCESSING': _("The transaction is created and requires the generation of "
+                                 "the SEPA direct debit XML file."),
+        'WAITTING_EXECUTION': _("SEPA Direct Debit XML file is generated but needs to be sent "
+                                "to the financial institution."),
+    }
     
     def get_bill_message(self):
-        return _("This bill will been automatically charged to your bank account "
-                 " with IBAN number<br><strong>%s</strong>.") % self.instance.number
+        context = {
+            'number': self.instance.number
+        }
+        return settings.PAYMENTS_DD_BILL_MESSAGE % context
     
     @classmethod
     def process(cls, transactions):
@@ -68,6 +82,8 @@ class SEPADirectDebit(PaymentMethod):
     
     @classmethod
     def process_credits(cls, transactions):
+        import lxml.builder
+        from lxml.builder import E
         from ..models import TransactionProcess
         process = TransactionProcess.objects.create()
         context = cls.get_context(transactions)
@@ -80,7 +96,7 @@ class SEPADirectDebit(PaymentMethod):
         )
         sepa = sepa.Document(
             E.CstmrCdtTrfInitn(
-                cls.get_header(context),
+                cls.get_header(context, process),
                 E.PmtInf(                                   # Payment Info
                     E.PmtInfId(str(process.id)),            # Payment Id
                     E.PmtMtd("TRF"),                        # Payment Method
@@ -112,6 +128,8 @@ class SEPADirectDebit(PaymentMethod):
     
     @classmethod
     def process_debts(cls, transactions):
+        import lxml.builder
+        from lxml.builder import E
         from ..models import TransactionProcess
         process = TransactionProcess.objects.create()
         context = cls.get_context(transactions)
@@ -177,15 +195,19 @@ class SEPADirectDebit(PaymentMethod):
     
     @classmethod
     def get_debt_transactions(cls, transactions, process):
+        import lxml.builder
+        from lxml.builder import E
         for transaction in transactions:
             transaction.process = process
             transaction.state = transaction.WAITTING_EXECUTION
-            transaction.save(update_fields=['state', 'process'])
+            transaction.save(update_fields=('state', 'process', 'modified_at'))
             account = transaction.account
             data = transaction.source.data
             yield E.DrctDbtTxInf(                           # Direct Debit Transaction Info
                 E.PmtId(                                    # Payment Id
-                    E.EndToEndId(str(transaction.id))       # Payment Id/End to End
+                    E.EndToEndId(                           # Payment Id/End to End
+                        str(transaction.bill.number)+'-'+str(transaction.id)
+                    )
                 ),
                 E.InstdAmt(                                 # Instructed Amount
                     str(abs(transaction.amount)),
@@ -207,21 +229,23 @@ class SEPADirectDebit(PaymentMethod):
                     )
                 ),
                 E.Dbtr(                                     # Debtor
-                    E.Nm(account.name),                     # Name
+                    E.Nm(account.billcontact.get_name()),         # Name
                 ),
                 E.DbtrAcct(                                 # Debtor Account
                     E.Id(
-                        E.IBAN(data['iban'])
+                        E.IBAN(data['iban'].replace(' ', ''))
                     ),
                 ),
             )
     
     @classmethod
-    def get_credit_transactions(transactions, process):
+    def get_credit_transactions(cls, transactions, process):
+        import lxml.builder
+        from lxml.builder import E
         for transaction in transactions:
             transaction.process = process
             transaction.state = transaction.WAITTING_EXECUTION
-            transaction.save(update_fields=['state', 'process'])
+            transaction.save(update_fields=('state', 'process', 'modified_at'))
             account = transaction.account
             data = transaction.source.data
             yield E.CdtTrfTxInf(                            # Credit Transfer Transaction Info
@@ -246,13 +270,15 @@ class SEPADirectDebit(PaymentMethod):
                 ),
                 E.CdtrAcct(                                 # Creditor Account
                     E.Id(
-                        E.IBAN(data['iban'])
+                        E.IBAN(data['iban'].replace(' ', ''))
                     ),
                 ),
             )
     
     @classmethod
     def get_header(cls, context, process):
+        import lxml.builder
+        from lxml.builder import E
         return E.GrpHdr(                            # Group Header
             E.MsgId(str(process.id)),           # Message Id
             E.CreDtTm(                              # Creation Date Time
@@ -274,12 +300,14 @@ class SEPADirectDebit(PaymentMethod):
     
     @classmethod
     def process_xml(cls, sepa, xsd, file_name, process):
+        from lxml import etree
         # http://www.iso20022.org/documents/messages/1_0_version/pain/schemas/pain.008.001.02.zip
         path = os.path.dirname(os.path.realpath(__file__))
         xsd_path = os.path.join(path, xsd)
         schema_doc = etree.parse(xsd_path)
         schema = etree.XMLSchema(schema_doc)
-        sepa = etree.parse(StringIO(etree.tostring(sepa)))
+        sepa = StringIO(etree.tostring(sepa).decode('utf8'))
+        sepa = etree.parse(sepa)
         schema.assertValid(sepa)
         process.file = file_name
         process.save(update_fields=['file'])
@@ -287,4 +315,3 @@ class SEPADirectDebit(PaymentMethod):
                    pretty_print=True,
                    xml_declaration=True,
                    encoding='UTF-8')
-

@@ -4,34 +4,19 @@ from django.utils import timezone
 from django.utils.translation import ungettext, ugettext as _
 
 
-def pluralize_year(n):
+def verbose_time(n, units, ago='ago'):
+    if n >= 5:
+        return _("{n} {units} {ago}").format(n=int(n), units=units, ago=ago)
     return ungettext(
-        _('{num:.1f} year{ago}'),
-        _('{num:.1f} years{ago}'), n)
-
-
-def pluralize_month(n):
-    return ungettext(
-        _('{num:.1f} month{ago}'),
-        _('{num:.1f} months{ago}'), n)
-
-
-def pluralize_week(n):
-    return ungettext(
-        _('{num:.1f} week{ago}'),
-        _('{num:.1f} weeks {ago}'), n)
-
-
-def pluralize_day(n):
-    return ungettext(
-        _('{num:.1f} day{ago}'),
-        _('{num:.1f} days{ago}'), n)
+        _("{n:.1f} {s_units} {ago}"),
+        _("{n:.1f} {units} {ago}"), n
+    ).format(n=n, units=units, s_units=units[:-1], ago=ago)
 
 
 OLDER_CHUNKS = (
-    (365.0, pluralize_year),
-    (30.0, pluralize_month),
-    (7.0, pluralize_week),
+    (365.0, 'years'),
+    (30.0, 'months'),
+    (7.0, 'weeks'),
 )
 
 
@@ -40,7 +25,7 @@ def _un(singular__plural, n=None):
     return ungettext(singular, plural, n)
 
 
-def naturaldatetime(date, include_seconds=False):
+def naturaldatetime(date, show_seconds=False):
     """Convert datetime into a human natural date string."""
     if not date:
         return ''
@@ -52,51 +37,37 @@ def naturaldatetime(date, include_seconds=False):
     delta_midnight = today - date
     
     days = delta.days
-    hours = int(round(delta.seconds / 3600, 0))
-    minutes = delta.seconds / 60
+    hours = float(delta.seconds) / 3600
+    minutes = float(delta.seconds) / 60
     seconds = delta.seconds
     
-    ago = ' ago'
-    if days < 0:
-        ago = ''
     days = abs(days)
+    ago = ''
+    if right_now > date:
+        ago = 'ago'
     
     if days == 0:
-        if hours == 0:
-            if minutes > 0:
-                minutes = float(seconds)/60
-                return ungettext(
-                    _('{minutes:.1f} minute{ago}'),
-                    _('{minutes:.1f} minutes{ago}'), minutes
-                ).format(minutes=minutes, ago=ago)
+        if int(hours) == 0:
+            if minutes >= 1 or not show_seconds:
+                return verbose_time(minutes, 'minutes', ago=ago)
             else:
-                if include_seconds and seconds:
-                    return ungettext(
-                        _('{seconds} second{ago}'),
-                        _('{seconds} seconds{ago}'), seconds
-                    ).format(seconds=seconds, ago=ago)
-                return _('just now')
+                return verbose_time(seconds, 'seconds', ago=ago)
         else:
-            hours = float(minutes)/60
-            return ungettext(
-                _('{hours:.1f} hour{ago}'),
-                _('{hours:.1f} hours{ago}'), hours
-            ).format(hours=hours, ago=ago)
+            return verbose_time(hours, 'hours', ago=ago)
     
     if delta_midnight.days == 0:
-        return _('yesterday at {time}').format(time=date.strftime('%H:%M'))
+        date = timezone.localtime(date)
+        return _("yesterday at {time}").format(time=date.strftime('%H:%M'))
     
     count = 0
-    for chunk, pluralizefun in OLDER_CHUNKS:
+    for chunk, units in OLDER_CHUNKS:
         if days < 7.0:
             count = days + float(hours)/24
-            fmt = pluralize_day(count)
-            return fmt.format(num=count, ago=ago)
+            return verbose_time(count, 'days', ago=ago)
         if days >= chunk:
             count = (delta_midnight.days + 1) / chunk
             count = abs(count)
-            fmt = pluralizefun(count)
-            return fmt.format(num=count, ago=ago)
+            return verbose_time(count, units, ago=ago)
 
 
 def naturaldate(date):
@@ -112,21 +83,21 @@ def naturaldate(date):
     elif days == 1:
         return _('yesterday')
     ago = ' ago'
-    if days < 0:
+    if days < 0 or today < date:
         ago = ''
     days = abs(days)
     delta_midnight = today - date
     
     count = 0
-    for chunk, pluralizefun in OLDER_CHUNKS:
+    for chunk, units in OLDER_CHUNKS:
         if days < 7.0:
             count = days
-            fmt = pluralize_day(count)
+            fmt = verbose_time(count, 'days', ago=ago)
             return fmt.format(num=count, ago=ago)
         if days >= chunk:
             count = (delta_midnight.days + 1) / chunk
             count = abs(count)
-            fmt = pluralizefun(count)
+            fmt = verbose_time(count, units, ago=ago)
             return fmt.format(num=count, ago=ago)
 
 

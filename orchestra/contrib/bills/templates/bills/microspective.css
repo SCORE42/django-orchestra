@@ -4,7 +4,7 @@ body {
     margin: 40 auto !important;
 /*    margin-bottom: 30 !important;*/
     float: none !important;
-    font-family: Arial, 'Liberation Sans', 'DejaVu Sans', sans-serif;
+    font-family: sans;
 }
 
 a {
@@ -170,13 +170,17 @@ a:hover {
 }
 
 #lines .column-id {
-    width: 5%;
+    width: 8%;
     text-align: right;
 }
 
 #lines .column-description {
-    width: 65%;
+    width: 39%;
     text-align: left;
+}
+
+#lines .column-period {
+    width: 23%;
 }
 
 #lines .column-quantity {

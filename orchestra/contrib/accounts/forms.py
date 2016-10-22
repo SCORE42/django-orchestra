@@ -1,14 +1,18 @@
+import logging
 from collections import OrderedDict
 
 from django import forms
 from django.core.exceptions import ValidationError
-from django.db.models.loading import get_model
+from django.apps import apps
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.forms import UserCreationForm
 
 from . import settings
 from .models import Account
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_account_creation_form():
@@ -18,14 +22,20 @@ def create_account_creation_form():
             help_text=_("Designates whether to creates an enabled or disabled related system user. "
                         "Notice that a related system user will be always created."))
     })
-    for model, __, kwargs, help_text in settings.ACCOUNTS_CREATE_RELATED:
-        model = get_model(model)
-        field_name = 'create_%s' % model._meta.model_name
-        label = _("Create %s") % model._meta.verbose_name
-        fields[field_name] = forms.BooleanField(initial=True, required=False, label=label,
-                help_text=help_text)
+    create_related = []
+    for model, key, kwargs, help_text in settings.ACCOUNTS_CREATE_RELATED:
+        try:
+            model = apps.get_model(model)
+        except LookupError:
+            logger.error("%s not installed." % model)
+        else:
+            field_name = 'create_%s' % model._meta.model_name
+            label = _("Create %s") % model._meta.verbose_name
+            fields[field_name] = forms.BooleanField(
+                initial=True, required=False, label=label, help_text=help_text)
+            create_related.append((model, key, kwargs, help_text))
         
-    def clean(self):
+    def clean(self, create_related=create_related):
         """ unique usernames between accounts and system users """
         cleaned_data = UserCreationForm.clean(self)
         try:
@@ -40,8 +50,7 @@ def create_account_creation_form():
         systemuser_model = Account.main_systemuser.field.rel.to
         if systemuser_model.objects.filter(username=account.username).exists():
             errors['username'] = _("A system user with this name already exists.")
-        for model, key, related_kwargs, __ in settings.ACCOUNTS_CREATE_RELATED:
-            model = get_model(model)
+        for model, key, related_kwargs, __ in create_related:
             kwargs = {
                 key: eval(related_kwargs[key], {'account': account})
             }
@@ -55,11 +64,12 @@ def create_account_creation_form():
             raise ValidationError(errors)
     
     def save_model(self, account):
-        account.save(active_systemuser=self.cleaned_data['enable_systemuser'])
+        enable_systemuser=self.cleaned_data['enable_systemuser']
+        account.save(active_systemuser=enable_systemuser)
     
     def save_related(self, account):
         for model, key, related_kwargs, __ in settings.ACCOUNTS_CREATE_RELATED:
-            model = get_model(model)
+            model = apps.get_model(model)
             field_name = 'create_%s' % model._meta.model_name
             if self.cleaned_data[field_name]:
                 kwargs = {

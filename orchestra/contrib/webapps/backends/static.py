@@ -5,7 +5,11 @@ from orchestra.contrib.orchestration import ServiceController
 from . import WebAppServiceMixin
 
 
-class StaticBackend(WebAppServiceMixin, ServiceController):
+class StaticController(WebAppServiceMixin, ServiceController):
+    """
+    Static web pages.
+    Only creates the webapp dir and leaves the web server the decision to execute CGIs or not.
+    """
     verbose_name = _("Static")
     default_route_match = "webapp.type == 'static'"
     

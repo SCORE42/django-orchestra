@@ -1,33 +1,38 @@
+import os
 import re
+from functools import lru_cache
 
 from django.core.exceptions import ValidationError
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.plugins import Plugin
-from orchestra.utils.functional import cached
+from orchestra import plugins
 from orchestra.utils.python import import_class
 
 from . import settings
 
 
-class AppOption(Plugin):
+class AppOption(plugins.Plugin, metaclass=plugins.PluginMount):
     PHP = 'PHP'
     PROCESS = 'Process'
     FILESYSTEM = 'FileSystem'
     
     help_text = ""
     group = None
+    comma_separated = False
     
     @classmethod
-    @cached
-    def get_plugins(cls):
-        plugins = []
-        for cls in settings.WEBAPPS_ENABLED_OPTIONS:
-            plugins.append(import_class(cls))
+    @lru_cache()
+    def get_plugins(cls, all=False):
+        if all:
+            plugins = super().get_plugins()
+        else:
+            plugins = []
+            for cls in settings.WEBAPPS_ENABLED_OPTIONS:
+                plugins.append(import_class(cls))
         return plugins
     
     @classmethod
-    @cached
+    @lru_cache()
     def get_option_groups(cls):
         groups = {}
         for opt in cls.get_plugins():
@@ -51,14 +56,15 @@ class AppOption(Plugin):
 class PHPAppOption(AppOption):
     deprecated = None
     group = AppOption.PHP
+    abstract = True
     
     def validate(self):
-        super(PHPAppOption, self).validate()
+        super().validate()
         if self.deprecated:
             php_version = self.instance.webapp.type_instance.get_php_version_number()
             if php_version and self.deprecated and float(php_version) > self.deprecated:
                 raise ValidationError(
-                    _("This option is deprecated since PHP version %s.") % str(self.deprecated)
+                    _("This option is deprecated since PHP version %s.") % self.deprecated
                 )
 
 
@@ -68,6 +74,15 @@ class PublicRoot(AppOption):
     help_text = _("Document root relative to webapps/&lt;webapp&gt;/")
     regex = r'[^ ]+'
     group = AppOption.FILESYSTEM
+    
+    def validate(self):
+        super().validate()
+        base_path = self.instance.webapp.get_base_path()
+        path = os.path.join(base_path, self.instance.value)
+        if not os.path.abspath(path).startswith(base_path):
+            raise ValidationError(
+                _("Public root path '%s' outside of webapp base path '%s'") % (path, base_path)
+            )
 
 
 class Timeout(AppOption):
@@ -95,15 +110,43 @@ class Processes(AppOption):
 class PHPEnableFunctions(PHPAppOption):
     name = 'enable_functions'
     verbose_name = _("Enable functions")
-    help_text = ','.join(settings.WEBAPPS_PHP_DISABLED_FUNCTIONS)
+    help_text = '<tt>%s</tt>' % ',<br>'.join([
+            ','.join(settings.WEBAPPS_PHP_DISABLED_FUNCTIONS[i:i+10])
+                for i in range(0, len(settings.WEBAPPS_PHP_DISABLED_FUNCTIONS), 10)
+        ])
     regex = r'^[\w\.,-]+$'
+    comma_separated = True
+    
+    def validate(self):
+        # Clean value removing spaces
+        self.instance.value = self.instance.value.replace(' ', '')
+        super().validate()
+
+
+class PHPDisableFunctions(PHPAppOption):
+    name = 'disable_functions'
+    verbose_name = _("Disable functions")
+    help_text = _("This directive allows you to disable certain functions for security reasons. "
+                  "It takes on a comma-delimited list of function names. disable_functions is not "
+                  "affected by Safe Mode. Default disabled fuctions include:<br>"
+                  "<tt>%s</tt>") % ',<br>'.join([
+            ','.join(settings.WEBAPPS_PHP_DISABLED_FUNCTIONS[i:i+10])
+                for i in range(0, len(settings.WEBAPPS_PHP_DISABLED_FUNCTIONS), 10)
+        ])
+    regex = r'^[\w\.,-]+$'
+    comma_separated = True
+    
+    def validate(self):
+        # Clean value removing spaces
+        self.instance.value = self.instance.value.replace(' ', '')
+        super().validate()
 
 
 class PHPAllowURLInclude(PHPAppOption):
     name = 'allow_url_include'
     verbose_name = _("Allow URL include")
     help_text = _("Allows the use of URL-aware fopen wrappers with include, include_once, require, "
-                "require_once (On or Off).")
+                  "require_once (On or Off).")
     regex = r'^(On|Off|on|off)$'
 
 
@@ -153,6 +196,12 @@ class PHPDisplayErrors(PHPAppOption):
 class PHPExtension(PHPAppOption):
     name = 'extension'
     verbose_name = _("Extension")
+    regex = r'^[^ ]+$'
+
+
+class PHPIncludePath(PHPAppOption):
+    name = 'include_path'
+    verbose_name = _("Include path")
     regex = r'^[^ ]+$'
 
 
@@ -308,10 +357,21 @@ class PHPSuhosinExecutorIncludeWhitelist(PHPAppOption):
 
 class PHPUploadMaxFileSize(PHPAppOption):
     name = 'upload_max_filesize'
-    verbose_name = _("Upload max filezise")
+    verbose_name = _("Upload max filesize")
     help_text = _("Value between 0M and 999M.")
     regex = r'^[0-9]{1,3}M$'
 
+
+class PHPUploadTmpDir(PHPAppOption):
+    name = 'upload_tmp_dir'
+    verbose_name = _("Upload tmp dir")
+    help_text = _("The temporary directory used for storing files when doing file upload. "
+                  "Must be writable by whatever user PHP is running as. "
+                  "If not specified PHP will use the system's default.<br>"
+                  "If the directory specified here is not writable, PHP falls back to the "
+                  "system default temporary directory. If open_basedir is on, then the system "
+                  "default directory must be allowed for an upload to succeed.")
+    regex = r'.*$'
 
 class PHPZendExtension(PHPAppOption):
     name = 'zend_extension'

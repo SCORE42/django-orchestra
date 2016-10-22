@@ -1,12 +1,15 @@
+import os
+
 from django.core import exceptions
+from django.core.urlresolvers import reverse
 from django.db import models
+from django.db.models.fields.files import FileField, FieldFile
 from django.utils.text import capfirst
 
 from ..forms.fields import MultiSelectFormField
-from ..utils.apps import isinstalled
 
 
-class MultiSelectField(models.CharField, metaclass=models.SubfieldBase):
+class MultiSelectField(models.CharField):
     def formfield(self, **kwargs):
         defaults = {
             'required': not self.blank,
@@ -27,10 +30,13 @@ class MultiSelectField(models.CharField, metaclass=models.SubfieldBase):
     
     def to_python(self, value):
         if value:
-#            if isinstance(value, tuple) and value[0].startswith('('):
-#                # Workaround unknown bug on default model values
-#                # [u"('SUPPORT'", u" 'ADMIN'", u" 'BILLING'", u" 'TECH'", u" 'ADDS'", u" 'EMERGENCY')"]
-#                value = list(eval(', '.join(value)))
+            if isinstance(value, str):
+                return value.split(',')
+            return value
+        return []
+    
+    def from_db_value(self, value, expression, connection, context):
+        if value:
             if isinstance(value, str):
                 return value.split(',')
             return value
@@ -44,11 +50,12 @@ class MultiSelectField(models.CharField, metaclass=models.SubfieldBase):
             setattr(cls, 'get_%s_display' % self.name, func)
     
     def validate(self, value, model_instance):
-        arr_choices = self.get_choices_selected(self.get_choices_default())
-        for opt_select in value:
-            if (opt_select not in arr_choices):
-                msg = self.error_messages['invalid_choice'] % value
-                raise exceptions.ValidationError(msg)
+        if self.choices:
+            arr_choices = self.get_choices_selected(self.get_choices())
+            for opt_select in value:
+                if (opt_select not in arr_choices):
+                    msg = self.error_messages['invalid_choice'] % {'value': opt_select}
+                    raise exceptions.ValidationError(msg)
     
     def get_choices_selected(self, arr_choices=''):
         if not arr_choices:
@@ -61,7 +68,32 @@ class NullableCharField(models.CharField):
          return value or None
 
 
-if isinstalled('south'):
-    from south.modelsinspector import add_introspection_rules
-    add_introspection_rules([], ["^orchestra\.models\.fields\.MultiSelectField"])
-    add_introspection_rules([], ["^orchestra\.models\.fields\.NullableCharField"])
+class PrivateFieldFile(FieldFile):
+    @property
+    def url(self):
+        self._require_file()
+        app_label = self.instance._meta.app_label
+        model_name  = self.instance._meta.object_name.lower()
+        field_name = self.field.name
+        pk = self.instance.pk
+        filename = os.path.basename(self.path)
+        args = [app_label, model_name, field_name, pk, filename]
+        return reverse('private-media', args=args)
+    
+    @property
+    def condition(self):
+        return self.field.condition
+    
+    @property
+    def attachment(self):
+        return self.field.attachment
+
+
+class PrivateFileField(FileField):
+    attr_class = PrivateFieldFile
+    
+    def __init__(self, verbose_name=None, name=None, upload_to='', storage=None, attachment=True,
+                 condition=lambda request, instance: request.user.is_superuser, **kwargs):
+        super(PrivateFileField, self).__init__(verbose_name, name, upload_to, storage, **kwargs)
+        self.condition = condition
+        self.attachment = attachment

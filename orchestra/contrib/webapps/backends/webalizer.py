@@ -5,8 +5,11 @@ from orchestra.contrib.orchestration import ServiceController
 from . import WebAppServiceMixin
 
 
-class WebalizerAppBackend(WebAppServiceMixin, ServiceController):
-    """ Needed for cleaning up webalizer main folder when webapp deleteion withou related contents """
+# TODO DEPRECATE
+class WebalizerAppController(WebAppServiceMixin, ServiceController):
+    """
+    Needed for cleaning up webalizer main folder when webapp deleteion withou related contents
+    """
     verbose_name = _("Webalizer App")
     default_route_match = "webapp.type == 'webalizer'"
     

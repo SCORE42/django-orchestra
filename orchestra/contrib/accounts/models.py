@@ -1,22 +1,30 @@
 from django.contrib.auth import models as auth
+from django.conf import settings as djsettings
 from django.core import validators
 from django.db import models
-from django.db.models.loading import get_model
-from django.utils import timezone
+from django.db.models import signals
+from django.apps import apps
+from django.utils import timezone, translation
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.contrib.orchestration.middlewares import OperationsMiddleware
-from orchestra.contrib.orchestration import Operation
-from orchestra.core import services, accounts
-from orchestra.utils import send_email_template
+#from orchestra.contrib.orchestration.middlewares import OperationsMiddleware
+#from orchestra.contrib.orchestration import Operation
+from orchestra.core import services
+from orchestra.models.utils import has_db_field
+from orchestra.utils.mail import send_email_template
 
 from . import settings
 
 
+class AccountManager(auth.UserManager):
+    def get_main(self):
+        return self.get(pk=settings.ACCOUNTS_MAIN_PK)
+
+
 class Account(auth.AbstractBaseUser):
-    # Username max_length determined by LINUX system user lentgh: 32
+    # Username max_length determined by LINUX system user/group lentgh: 32
     username = models.CharField(_("username"), max_length=32, unique=True,
-        help_text=_("Required. 64 characters or fewer. Letters, digits and ./-/_ only."),
+        help_text=_("Required. 32 characters or fewer. Letters, digits and ./-/_ only."),
         validators=[
             validators.RegexValidator(r'^[\w.-]+$', _("Enter a valid username."), 'invalid')
         ])
@@ -39,7 +47,7 @@ class Account(auth.AbstractBaseUser):
                     "Unselect this instead of deleting accounts."))
     date_joined = models.DateTimeField(_("date joined"), default=timezone.now)
     
-    objects = auth.UserManager()
+    objects = AccountManager()
     
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['email']
@@ -55,23 +63,16 @@ class Account(auth.AbstractBaseUser):
     def is_staff(self):
         return self.is_superuser
     
-#    @property
-#    def main_systemuser(self):
-#        return self.systemusers.get(is_main=True)
-    
-    @classmethod
-    def get_main(cls):
-        return cls.objects.get(pk=settings.ACCOUNTS_MAIN_PK)
-    
     def save(self, active_systemuser=False, *args, **kwargs):
         created = not self.pk
         if not created:
             was_active = Account.objects.filter(pk=self.pk).values_list('is_active', flat=True)[0]
         super(Account, self).save(*args, **kwargs)
         if created:
-            self.main_systemuser = self.systemusers.create(account=self, username=self.username,
-                    password=self.password, is_active=active_systemuser)
-            self.save(update_fields=['main_systemuser'])
+            self.main_systemuser = self.systemusers.create(
+                account=self, username=self.username, password=self.password,
+                is_active=active_systemuser)
+            self.save(update_fields=('main_systemuser',))
         elif was_active != self.is_active:
             self.notify_related()
     
@@ -81,21 +82,50 @@ class Account(auth.AbstractBaseUser):
     
     def disable(self):
         self.is_active = False
-        self.save(update_fields=['is_active'])
+        self.save(update_fields=('is_active',))
         self.notify_related()
     
-    def notify_related(self):
-        # Trigger save() on related objects that depend on this account
-        for rel in self._meta.get_all_related_objects():
+    def enable(self):
+        self.is_active = True
+        self.save(update_fields=('is_active',))
+        self.notify_related()
+    
+    def get_services_to_disable(self):
+        related_fields = [
+            f for f in self._meta.get_fields()
+            if (f.one_to_many or f.one_to_one)
+            and f.auto_created and not f.concrete
+        ]
+        for rel in related_fields:
             source = getattr(rel, 'related_model', rel.model)
             if source in services and hasattr(source, 'active'):
                 for obj in getattr(self, rel.get_accessor_name()).all():
-                    OperationsMiddleware.collect(Operation.SAVE, instance=obj, update_fields=[])
+                    yield obj
     
-    def send_email(self, template, context, contacts=[], attachments=[], html=None):
-        contacts = self.contacts.filter(email_usages=contacts)
-        email_to = contacts.values_list('email', flat=True)
-        send_email_template(template, context, email_to, html=html, attachments=attachments)
+    def notify_related(self):
+        """ Trigger save() on related objects that depend on this account """
+        for obj in self.get_services_to_disable():
+            signals.pre_save.send(sender=type(obj), instance=obj)
+            signals.post_save.send(sender=type(obj), instance=obj)
+#            OperationsMiddleware.collect(Operation.SAVE, instance=obj, update_fields=())
+    
+    def get_contacts_emails(self, usages=None):
+        contacts = self.contacts.all()
+        if usages is not None:
+            contactes = contacts.filter(email_usages=usages)
+        return contacts.values_list('email', flat=True)
+    
+    def send_email(self, template, context, email_from=None, usages=None, attachments=[], html=None):
+        contacts = self.contacts.filter(email_usages=usages)
+        email_to = self.get_contacts_emails(usages)
+        extra_context = {
+            'account': self,
+            'email_from': email_from or djsettings.SERVER_EMAIL,
+        }
+        extra_context.update(context)
+        with translation.override(self.language):
+            send_email_template(template, extra_context, email_to, email_from=email_from,
+                html=html, attachments=attachments)
     
     def get_full_name(self):
         return self.full_name or self.short_name or self.username
@@ -139,14 +169,14 @@ class Account(auth.AbstractBaseUser):
             return True
         return auth._user_has_module_perms(self, app_label)
     
-    def get_related_passwords(self):
+    def get_related_passwords(self, db_field=False):
         related = [
             self.main_systemuser,
         ]
         for model, key, related_kwargs, __ in settings.ACCOUNTS_CREATE_RELATED:
             if 'password' not in related_kwargs:
                 continue
-            model = get_model(model)
+            model = apps.get_model(model)
             kwargs = {
                 key: eval(related_kwargs[key], {'account': self})
             }
@@ -154,9 +184,8 @@ class Account(auth.AbstractBaseUser):
                 rel = model.objects.get(account=self, **kwargs)
             except model.DoesNotExist:
                 continue
+            if db_field:
+                if not has_db_field(rel, 'password'):
+                    continue
             related.append(rel)
         return related
-
-
-services.register(Account, menu=False)
-accounts.register(Account)

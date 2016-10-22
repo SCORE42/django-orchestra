@@ -1,10 +1,11 @@
+from copy import deepcopy
+
 from admin_tools.menu import items, Menu
 from django.core.urlresolvers import reverse
 from django.utils.text import capfirst
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.core import services, accounts
-from orchestra.utils.apps import isinstalled
+from orchestra.core import services, accounts, administration
 
 
 def api_link(context):
@@ -27,78 +28,42 @@ def api_link(context):
         return reverse('api-root')
 
 
-def get_services():
-    childrens = []
-    for model, options in services.get().items():
-        if options.get('menu', True):
+def process_registry(register):
+    def get_item(model, options, name=None):
+        if name is None:
+            name = capfirst(options.get('verbose_name_plural'))
+        if isinstance(model, str):
+            url = reverse('admin:'+model)
+        else:
             opts = model._meta
             url = reverse('admin:{}_{}_changelist'.format(
-                    opts.app_label, opts.model_name))
-            name = capfirst(options.get('verbose_name_plural'))
-            childrens.append(items.MenuItem(name, url))
-    return sorted(childrens, key=lambda i: i.title)
-
-
-def get_accounts():
-    childrens=[]
-    if isinstalled('orchestra.contrib.payments'):
-        url = reverse('admin:payments_transactionprocess_changelist')
-        childrens.append(items.MenuItem(_("Transaction processes"), url))
-    if isinstalled('orchestra.contrib.issues'):
-        url = reverse('admin:issues_ticket_changelist')
-        childrens.append(items.MenuItem(_("Tickets"), url))
-    for model, options in accounts.get().items():
+                opts.app_label, opts.model_name)
+            )
+        item = items.MenuItem(name, url)
+        item.options = options
+        return item
+    
+    childrens = {}
+    for model, options in register.get().items():
         if options.get('menu', True):
-            opts = model._meta
-            url = reverse('admin:{}_{}_changelist'.format(
-                    opts.app_label, opts.model_name))
-            name = capfirst(options.get('verbose_name_plural'))
-            childrens.append(items.MenuItem(name, url))
-    return sorted(childrens, key=lambda i: i.title)
-
-
-def get_administration_items():
-    childrens = []
-    if isinstalled('orchestra.contrib.services'):
-        url = reverse('admin:services_service_changelist')
-        childrens.append(items.MenuItem(_("Services"), url))
-        url = reverse('admin:plans_plan_changelist')
-        childrens.append(items.MenuItem(_("Plans"), url))
-    if isinstalled('orchestra.contrib.orchestration'):
-        route = reverse('admin:orchestration_route_changelist')
-        backendlog = reverse('admin:orchestration_backendlog_changelist')
-        server = reverse('admin:orchestration_server_changelist')
-        childrens.append(items.MenuItem(_("Orchestration"), route, children=[
-            items.MenuItem(_("Routes"), route),
-            items.MenuItem(_("Backend logs"), backendlog),
-            items.MenuItem(_("Servers"), server),
-        ]))
-    if isinstalled('orchestra.contrib.resources'):
-        resource = reverse('admin:resources_resource_changelist')
-        data = reverse('admin:resources_resourcedata_changelist')
-        monitor = reverse('admin:resources_monitordata_changelist')
-        childrens.append(items.MenuItem(_("Resources"), resource, children=[
-            items.MenuItem(_("Resources"), resource),
-            items.MenuItem(_("Data"), data),
-            items.MenuItem(_("Monitoring"), monitor),
-        ]))
-    if isinstalled('orchestra.contrib.miscellaneous'):
-        url = reverse('admin:miscellaneous_miscservice_changelist')
-        childrens.append(items.MenuItem(_("Miscellaneous"), url))
-    if isinstalled('orchestra.contrib.issues'):
-        url = reverse('admin:issues_queue_changelist')
-        childrens.append(items.MenuItem(_("Ticket queues"), url))
-    if isinstalled('djcelery'):
-        task = reverse('admin:djcelery_taskstate_changelist')
-        periodic = reverse('admin:djcelery_periodictask_changelist')
-        worker = reverse('admin:djcelery_workerstate_changelist')
-        childrens.append(items.MenuItem(_("Celery"), task, children=[
-            items.MenuItem(_("Tasks"), task),
-            items.MenuItem(_("Periodic tasks"), periodic),
-            items.MenuItem(_("Workers"), worker),
-        ]))
-    return childrens
-
+            parent = options.get('parent')
+            if parent:
+                name = capfirst(model._meta.app_label)
+                parent_item = childrens.get(parent)
+                if parent_item:
+                    if not parent_item.children:
+                        parent_item.children.append(deepcopy(parent_item))
+                        parent_item.title = name
+                else:
+                    parent_item = get_item(parent, register[parent], name=name)
+                    parent_item.children = []
+                parent_item.children.append(get_item(model, options))
+                childrens[parent] = parent_item
+            elif model not in childrens:
+                childrens[model] = get_item(model, options)
+            else:
+                childrens[model].children.insert(0, get_item(model, options))
+    return sorted(childrens.values(), key=lambda i: i.title)
 
 
 class OrchestraMenu(Menu):
@@ -120,16 +85,16 @@ class OrchestraMenu(Menu):
 #            items.Bookmarks(),
             items.MenuItem(
                 _("Services"),
-                children=get_services()
+                children=process_registry(services)
             ),
             items.MenuItem(
                 _("Accounts"),
                 reverse('admin:accounts_account_changelist'),
-                children=get_accounts()
+                children=process_registry(accounts)
             ),
             items.MenuItem(
                 _("Administration"),
-                children=get_administration_items()
+                children=process_registry(administration)
             ),
             items.MenuItem("API", api_link(context)),
         ]

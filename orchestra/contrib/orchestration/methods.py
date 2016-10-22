@@ -1,88 +1,58 @@
-import hashlib
-import json
+import inspect
 import logging
-import os
 import socket
 import sys
 import select
+import textwrap
 
-import paramiko
 from celery.datastructures import ExceptionInfo
-from django.conf import settings as djsettings
 
-from orchestra.utils.python import CaptureStdout
+from orchestra.settings import ORCHESTRA_SSH_DEFAULT_USER
+from orchestra.utils.sys import sshrun
+from orchestra.utils.python import CaptureStdout, import_class
 
 from . import settings
 
 
 logger = logging.getLogger(__name__)
 
-transports = {}
 
-
-def SSH(backend, log, server, cmds, async=False):
+def Paramiko(backend, log, server, cmds, async=False, paramiko_connections={}):
     """
-    Executes cmds to remote server using SSH
-    
-    The script is first copied using SCP in order to overflood the channel with large scripts
-    Then the script is executed using the defined backend.script_executable
+    Executes cmds to remote server using Pramaiko
     """
+    import paramiko
     script = '\n'.join(cmds)
     script = script.replace('\r', '')
-    bscript = script.encode('utf-8')
-    digest = hashlib.md5(bscript).hexdigest()
-    path = os.path.join(settings.ORCHESTRATION_TEMP_SCRIPT_PATH, digest)
-    remote_path = "%s.remote" % path
-    log.script = '# %s\n%s' % (remote_path, script)
-    log.save(update_fields=['script'])
+    log.state = log.STARTED
+    log.script = script
+    log.save(update_fields=('script', 'state', 'updated_at'))
     if not cmds:
         return
     channel = None
     ssh = None
     try:
-        # Avoid "Argument list too long" on large scripts by genereting a file
-        # and scping it to the remote server
-        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), 'wb') as handle:
-            handle.write(bscript)
-        
-        # ssh connection
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         addr = server.get_address()
-        key = settings.ORCHESTRATION_SSH_KEY_PATH
-        try:
-            ssh.connect(addr, username='root', key_filename=key, timeout=10)
-        except socket.error as e:
-            logger.error('%s timed out on %s' % (backend, addr))
-            log.state = log.TIMEOUT
-            log.stderr = str(e)
-            log.save(update_fields=['state', 'stderr'])
-            return
+        # ssh connection
+        ssh = paramiko_connections.get(addr)
+        if not ssh:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            key = settings.ORCHESTRATION_SSH_KEY_PATH
+            try:
+                ssh.connect(addr, username=ORCHESTRA_SSH_DEFAULT_USER, key_filename=key)
+            except socket.error as e:
+                logger.error('%s timed out on %s' % (backend, addr))
+                log.state = log.TIMEOUT
+                log.stderr = str(e)
+                log.save(update_fields=('state', 'stderr', 'updated_at'))
+                return
+            paramiko_connections[addr] = ssh
         transport = ssh.get_transport()
-        
-        # Copy script to remote server
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        sftp.put(path, remote_path)
-        sftp.chmod(remote_path, 0o600)
-        sftp.close()
-        os.remove(path)
-        
-        # Execute it
-        context = {
-            'executable': backend.script_executable,
-            'remote_path': remote_path,
-            'digest': digest,
-            'remove': '' if djsettings.DEBUG else "rm -fr %(remote_path)s\n",
-        }
-        cmd = (
-            "[[ $(md5sum %(remote_path)s|awk {'print $1'}) == %(digest)s ]] && %(executable)s %(remote_path)s\n"
-            "RETURN_CODE=$?\n"
-            "%(remove)s"
-            "exit $RETURN_CODE" % context
-        )
         channel = transport.open_session()
-        channel.exec_command(cmd)
-        
+        channel.exec_command(backend.script_executable)
+        channel.sendall(script)
+        channel.shutdown_write()
         # Log results
         logger.debug('%s running on %s' % (backend, server))
         if async:
@@ -100,7 +70,7 @@ def SSH(backend, log, server, cmds, async=False):
                     while part:
                         log.stderr += part
                         part = channel.recv_stderr(1024).decode('utf-8')
-                log.save(update_fields=['stdout', 'stderr'])
+                log.save(update_fields=('stdout', 'stderr', 'updated_at'))
                 if channel.exit_status_ready():
                     if second:
                         break
@@ -109,8 +79,8 @@ def SSH(backend, log, server, cmds, async=False):
             log.stdout += channel.makefile('rb', -1).read().decode('utf-8')
             log.stderr += channel.makefile_stderr('rb', -1).read().decode('utf-8')
         
-        log.exit_code = exit_code = channel.recv_exit_status()
-        log.state = log.SUCCESS if exit_code == 0 else log.FAILURE
+        log.exit_code = channel.recv_exit_status()
+        log.state = log.SUCCESS if log.exit_code == 0 else log.FAILURE
         logger.debug('%s execution state on %s is %s' % (backend, server, log.state))
         log.save()
     except:
@@ -122,34 +92,95 @@ def SSH(backend, log, server, cmds, async=False):
     finally:
         if log.state == log.STARTED:
             log.state = log.ABORTED
-            log.save(update_fields=['state'])
+            log.save(update_fields=('state', 'updated_at'))
         if channel is not None:
             channel.close()
-        if ssh is not None:
-            ssh.close()
+
+
+def OpenSSH(backend, log, server, cmds, async=False):
+    """
+    Executes cmds to remote server using SSH with connection resuse for maximum performance
+    """
+    script = '\n'.join(cmds)
+    script = script.replace('\r', '')
+    log.state = log.STARTED
+    log.script = '\n'.join((log.script, script))
+    log.save(update_fields=('script', 'state', 'updated_at'))
+    if not cmds:
+        return
+    try:
+        ssh = sshrun(server.get_address(), script, executable=backend.script_executable,
+            persist=True, async=async, silent=True)
+        logger.debug('%s running on %s' % (backend, server))
+        if async:
+            for state in ssh:
+                log.stdout += state.stdout.decode('utf8')
+                log.stderr += state.stderr.decode('utf8')
+                log.save(update_fields=('stdout', 'stderr', 'updated_at'))
+            exit_code = state.exit_code
+        else:
+            log.stdout += ssh.stdout.decode('utf8')
+            log.stderr += ssh.stderr.decode('utf8')
+            exit_code = ssh.exit_code
+        if not log.exit_code:
+            log.exit_code = exit_code
+            if exit_code == 255 and log.stderr.startswith('ssh: connect to host'):
+                log.state = log.TIMEOUT
+            else:
+                log.state = log.SUCCESS if exit_code == 0 else log.FAILURE
+        logger.debug('%s execution state on %s is %s' % (backend, server, log.state))
+        log.save()
+    except:
+        log.state = log.ERROR
+        log.traceback = ExceptionInfo(sys.exc_info()).traceback
+        logger.error('Exception while executing %s on %s' % (backend, server))
+        logger.debug(log.traceback)
+        log.save()
+    finally:
+        if log.state == log.STARTED:
+            log.state = log.ABORTED
+            log.save(update_fields=('state', 'updated_at'))
+
+
+def SSH(*args, **kwargs):
+    """ facade function enabling to chose between multiple SSH backends"""
+    method = import_class(settings.ORCHESTRATION_SSH_METHOD_BACKEND)
+    return method(*args, **kwargs)
 
 
 def Python(backend, log, server, cmds, async=False):
-    # TODO collect stdout?
-    script = [ str(cmd.func.__name__) + str(cmd.args) for cmd in cmds ]
-    script = json.dumps(script, indent=4).replace('"', '')
-    log.script = '\n'.join([log.script, script])
-    log.save(update_fields=['script'])
+    script = ''
+    functions = set()
+    for cmd in cmds:
+        if cmd.func not in functions:
+            functions.add(cmd.func)
+            script += textwrap.dedent(''.join(inspect.getsourcelines(cmd.func)[0]))
+    script += '\n'
+    for cmd in cmds:
+        script += '# %s %s\n' % (cmd.func.__name__, cmd.args)
+    log.state = log.STARTED
+    log.script = '\n'.join((log.script, script))
+    log.save(update_fields=('script', 'state', 'updated_at'))
+    stdout = ''
     try:
         for cmd in cmds:
             with CaptureStdout() as stdout:
                 result = cmd(server)
             for line in stdout:
                 log.stdout += line + '\n'
+            if result:
+                log.stdout += '# Result: %s\n' % result
             if async:
-                log.save(update_fields=['stdout'])
+                log.save(update_fields=('stdout', 'updated_at'))
     except:
         log.exit_code = 1
         log.state = log.FAILURE
-        log.traceback = ExceptionInfo(sys.exc_info()).traceback
+        log.stdout += '\n'.join(stdout)
+        log.traceback += ExceptionInfo(sys.exc_info()).traceback
         logger.error('Exception while executing %s on %s' % (backend, server))
     else:
-        log.exit_code = 0
-        log.state = log.SUCCESS
+        if not log.exit_code:
+            log.exit_code = 0
+            log.state = log.SUCCESS
         logger.debug('%s execution state on %s is %s' % (backend, server, log.state))
     log.save()

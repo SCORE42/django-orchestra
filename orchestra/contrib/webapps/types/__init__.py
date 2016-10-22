@@ -1,16 +1,19 @@
+import importlib
+import os
+from functools import lru_cache
+
 from django.core.exceptions import ValidationError
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra import plugins
 from orchestra.plugins.forms import PluginDataForm
-from orchestra.utils.functional import cached
 from orchestra.utils.python import import_class
 
 from .. import settings
 from ..options import AppOption
 
 
-class AppType(plugins.Plugin):
+class AppType(plugins.Plugin, metaclass=plugins.PluginMount):
     name = None
     verbose_name = ""
     help_text= ""
@@ -22,11 +25,17 @@ class AppType(plugins.Plugin):
     # TODO generic name like 'execution' ?
     
     @classmethod
-    @cached
-    def get_plugins(cls):
-        plugins = []
-        for cls in settings.WEBAPPS_TYPES:
-            plugins.append(import_class(cls))
+    @lru_cache()
+    def get_plugins(cls, all=False):
+        if all:
+            for module in os.listdir(os.path.dirname(__file__)):
+                if module != '__init__.py' and module[-3:] == '.py':
+                    importlib.import_module('.'+module[:-3], __package__)
+            plugins = super().get_plugins()
+        else:
+            plugins = []
+            for cls in settings.WEBAPPS_TYPES:
+                plugins.append(import_class(cls))
         return plugins
     
     def validate(self):
@@ -38,8 +47,8 @@ class AppType(plugins.Plugin):
                 })
     
     @classmethod
-    @cached
-    def get_options(cls):
+    @lru_cache()
+    def get_group_options(cls):
         """ Get enabled options based on cls.option_groups """
         groups = AppOption.get_option_groups()
         options = []
@@ -52,16 +61,21 @@ class AppType(plugins.Plugin):
         return options
     
     @classmethod
-    def get_options_choices(cls):
+    def get_group_options_choices(cls):
         """ Generates grouped choices ready to use in Field.choices """
-        # generators can not be @cached
+        # generators can not be @lru_cache
         yield (None, '-------')
-        for group, options in cls.get_options():
+        for group, options in cls.get_group_options():
             if group is None:
                 for option in options:
                     yield (option.name, option.verbose_name)
             else:
                 yield (group, [(op.name, op.verbose_name) for op in options])
+    
+    @classmethod
+    def get_detail_lookups(cls):
+        """ {'field_name': (('opt1', _("Option 1"),)} """
+        return {}
     
     def get_detail(self):
         return ''
@@ -76,7 +90,8 @@ class AppType(plugins.Plugin):
         return {
             'app_id': self.instance.id,
             'app_name': self.instance.name,
-            'user': self.instance.account.username,
+            'user': self.instance.get_username(),
+            'user_id': self.instance.account.main_systemuser_id,
             'home': self.instance.account.main_systemuser.get_home(),
+            'account_id': self.instance.account_id,
         }
-

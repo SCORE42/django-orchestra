@@ -1,21 +1,31 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.core import services
 from orchestra.core.validators import validate_name
 
 from . import settings
 
 
-# TODO address and domain, perhaps allow only domain?
+class ListQuerySet(models.QuerySet):
+    def create(self, **kwargs):
+        """ Sets password if provided, all within a single DB operation """
+        password = kwargs.pop('password')
+        instance = self.model(**kwargs)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
+
+# TODO address and domain, perhaps allow only domain?
 class List(models.Model):
-    name = models.CharField(_("name"), max_length=128, unique=True, validators=[validate_name],
+    name = models.CharField(_("name"), max_length=64, unique=True, validators=[validate_name],
         help_text=_("Default list address &lt;name&gt;@%s") % settings.LISTS_DEFAULT_DOMAIN)
-    address_name = models.CharField(_("address name"), max_length=128,
+    address_name = models.CharField(_("address name"), max_length=64,
         validators=[validate_name], blank=True)
-    address_domain = models.ForeignKey(settings.LISTS_DOMAIN_MODEL,
+    address_domain = models.ForeignKey(settings.LISTS_DOMAIN_MODEL, on_delete=models.SET_NULL,
         verbose_name=_("address domain"), blank=True, null=True)
     admin_email = models.EmailField(_("admin email"),
         help_text=_("Administration email address"))
@@ -26,6 +36,8 @@ class List(models.Model):
         help_text=_("Designates whether this account should be treated as active. "
                     "Unselect this instead of deleting accounts."))
     password = None
+    
+    objects = ListQuerySet.as_manager()
     
     class Meta:
         unique_together = ('address_name', 'address_domain')
@@ -43,6 +55,20 @@ class List(models.Model):
     def active(self):
         return self.is_active and self.account.is_active
     
+    def clean(self):
+        if self.address_name and not self.address_domain_id:
+            raise ValidationError({
+                'address_domain': _("Domain should be selected for provided address name."),
+            })
+    
+    def disable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
+    
+    def enable(self):
+        self.is_active = False
+        self.save(update_fields=('is_active',))
+    
     def get_address_name(self):
         return self.address_name or self.name
     
@@ -57,6 +83,3 @@ class List(models.Model):
             'name': self.name
         }
         return settings.LISTS_LIST_URL % context
-
-
-services.register(List)

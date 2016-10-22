@@ -3,15 +3,21 @@ import textwrap
 
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.contrib.orchestration import ServiceController, replace
+from orchestra.contrib.orchestration import ServiceController
 
 from .. import settings
 
 
-class WebalizerBackend(ServiceController):
+class WebalizerController(ServiceController):
+    """
+    Creates webalizer conf file for each time a webalizer webapp is mounted on a website.
+    """
     verbose_name = _("Webalizer Content")
     model = 'websites.Content'
     default_route_match = "content.webapp.type == 'webalizer'"
+    doc_settings = (settings,
+        ('WEBSITES_WEBALIZER_PATH',)
+    )
     
     def save(self, content):
         context = self.get_context(content)
@@ -20,7 +26,9 @@ class WebalizerBackend(ServiceController):
             if [[ ! -e %(webalizer_path)s/index.html ]]; then
                 echo 'Webstats are coming soon' > %(webalizer_path)s/index.html
             fi
-            echo '%(webalizer_conf)s' > %(webalizer_conf_path)s
+            cat << 'EOF' > %(webalizer_conf_path)s
+            %(webalizer_conf)s
+            EOF
             chown %(user)s:www-data %(webalizer_path)s
             chmod g+xr %(webalizer_path)s
             """) % context
@@ -28,10 +36,11 @@ class WebalizerBackend(ServiceController):
     
     def delete(self, content):
         context = self.get_context(content)
-        delete_webapp = type(content.webapp).objects.filter(pk=content.webapp.pk).exists()
+        delete_webapp = not type(content.webapp).objects.filter(pk=content.webapp.pk).exists()
         if delete_webapp:
-            self.append("rm -f %(webapp_path)s" % context)
-        if delete_webapp or not content.webapp.content_set.filter(website=content.website).exists():
+            self.append("rm -fr %(webapp_path)s" % context)
+        remounted = content.webapp.content_set.filter(website=content.website).exists()
+        if delete_webapp or not remounted:
             self.append("rm -fr %(webalizer_path)s" % context)
             self.append("rm -f %(webalizer_conf_path)s" % context)
     
@@ -91,4 +100,4 @@ class WebalizerBackend(ServiceController):
             SearchEngine   alltheweb.com   query=
             
             DumpSites      yes""") % context
-        return replace(context, "'", '"')
+        return context

@@ -6,6 +6,9 @@ from orchestra.utils.python import random_ascii
 
 from ..core.validators import validate_password
 
+from .fields import SpanField
+from .widgets import SpanWidget
+
 
 class UserCreationForm(forms.ModelForm):
     """
@@ -17,7 +20,8 @@ class UserCreationForm(forms.ModelForm):
         'duplicate_username': _("A user with that username already exists."),
     }
     password1 = forms.CharField(label=_("Password"),
-        widget=forms.PasswordInput, validators=[validate_password])
+        widget=forms.PasswordInput(attrs={'autocomplete': 'off'}),
+        validators=[validate_password])
     password2 = forms.CharField(label=_("Password confirmation"),
         widget=forms.PasswordInput,
         help_text=_("Enter the same password as above, for verification."))
@@ -57,11 +61,38 @@ class UserCreationForm(forms.ModelForm):
 class UserChangeForm(forms.ModelForm):
     password = auth_forms.ReadOnlyPasswordHashField(label=_("Password"),
         help_text=_("Raw passwords are not stored, so there is no way to see "
-                    "this user's password, but you can change the password "
-                    "using <a href=\"password/\">this form</a>."))
+                    "this user's password, but you can change it by "
+                    "using <a href='../password/'>this form</a>. "
+                    "<a onclick='return showAddAnotherPopup(this);' href='../hash/'>Show hash</a>."))
     
     def clean_password(self):
         # Regardless of what the user provides, return the initial value.
         # This is done here, rather than on the field, because the
         # field does not have access to the initial value
         return self.initial["password"]
+
+
+class NonStoredUserChangeForm(forms.ModelForm):
+    password = forms.CharField(label=_("Password"), required=False,
+        widget=SpanWidget(display='<strong>Unknown password</strong>'),
+        help_text=_("This service's password is not stored, so there is no way to see it, "
+                    "but you can change it using <a href=\"../password/\">this form</a>."))
+
+
+class ReadOnlyFormMixin(object):
+    """
+    Mixin class for ModelForm or Form that provides support for SpanField on readonly fields
+    Meta:
+        readonly_fields = (ro_field1, ro_field2)
+    """
+    def __init__(self, *args, **kwargs):
+        super(ReadOnlyFormMixin, self).__init__(*args, **kwargs)
+        for name in self.Meta.readonly_fields:
+            field = self.fields[name]
+            if not isinstance(field, SpanField):
+                if not isinstance(field.widget, SpanWidget):
+                    field.widget = SpanWidget()
+                original = self.initial.get(name)
+                if hasattr(self, 'instance'):
+                    original = getattr(self.instance, name, original)
+                field.widget.original = original

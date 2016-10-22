@@ -1,14 +1,14 @@
+import calendar
 import decimal
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
-from django.db.models.loading import get_model
+from django.apps import apps
 from django.utils.functional import cached_property
 from django.utils.module_loading import autodiscover_modules
 from django.utils.translation import string_concat, ugettext_lazy as _
 
 from orchestra.core import caches, validators
-from orchestra.core.translations import ModelTranslation
 from orchestra.utils.python import import_class
 
 from . import settings
@@ -19,6 +19,17 @@ autodiscover_modules('handlers')
 
 rate_class = import_class(settings.SERVICES_RATE_CLASS)
 
+
+class ServiceQuerySet(models.QuerySet):
+    def filter_by_instance(self, instance):
+        cache = caches.get_request_cache()
+        ct = ContentType.objects.get_for_model(instance)
+        key = 'services.Service-%i' % ct.pk
+        services = cache.get(key)
+        if services is None:
+            services = self.filter(content_type=ct, is_active=True)
+            cache.set(key, services)
+        return services
 
 
 class Service(models.Model):
@@ -43,7 +54,8 @@ class Service(models.Model):
     PREPAY = 'PREPAY'
     POSTPAY = 'POSTPAY'
     
-    _ignore_types = ' and '.join(', '.join(settings.SERVICES_IGNORE_ACCOUNT_TYPE).rsplit(', ', 1)).lower()
+    _ignore_types = ' and '.join(
+        ', '.join(settings.SERVICES_IGNORE_ACCOUNT_TYPE).rsplit(', ', 1)).lower()
     
     description = models.CharField(_("description"), max_length=256, unique=True)
     content_type = models.ForeignKey(ContentType, verbose_name=_("content type"),
@@ -59,10 +71,13 @@ class Service(models.Model):
             "<tt>&nbsp;miscellaneous.active and str(miscellaneous.identifier).endswith(('.org', '.net', '.com'))</tt><br>"
             "<tt>&nbsp;contractedplan.plan.name == 'association_fee''</tt><br>"
             "<tt>&nbsp;instance.active</tt>"))
+    periodic_update = models.BooleanField(_("periodic update"), default=False,
+        help_text=_("Whether a periodic update of this service orders should be performed or not. "
+                    "Needed for <tt>match</tt> definitions that depend on complex model interactions, "
+                    "where <tt>content type</tt> model save and delete operations are not enought."))
     handler_type = models.CharField(_("handler"), max_length=256, blank=True,
-        help_text=_("Handler used for processing this Service. A handler "
-                    "enables customized behaviour far beyond what options "
-                    "here allow to."),
+        help_text=_("Handler used for processing this Service. A handler enables customized "
+                    "behaviour far beyond what options here allow to."),
         choices=ServiceHandler.get_choices())
     is_active = models.BooleanField(_("active"), default=True)
     ignore_superusers = models.BooleanField(_("ignore %s") % _ignore_types, default=True,
@@ -77,21 +92,21 @@ class Service(models.Model):
         ),
         default=ANUAL, blank=True)
     billing_point = models.CharField(_("billing point"), max_length=16,
-        help_text=_("Reference point for calculating the renewal date "
-                    "on recurring invoices"),
+        help_text=_("Reference point for calculating the renewal date on recurring invoices"),
         choices=(
             (ON_REGISTER, _("Registration date")),
-            (FIXED_DATE, _("Fixed billing date")),
+            (FIXED_DATE, _("Every %(month)s") % {
+                'month': calendar.month_name[settings.SERVICES_SERVICE_ANUAL_BILLING_MONTH]
+            }),
         ),
         default=FIXED_DATE)
     is_fee = models.BooleanField(_("fee"), default=False,
-        help_text=_("Designates whether this service should be billed as "
-                    " membership fee or not"))
-    order_description = models.CharField(_("Order description"), max_length=128, blank=True,
+        help_text=_("Designates whether this service should be billed as membership fee or not"))
+    order_description = models.CharField(_("Order description"), max_length=256, blank=True,
         help_text=_(
             "Python <a href='https://docs.python.org/2/library/functions.html#eval'>expression</a> "
             "used for generating the description for the bill lines of this services.<br>"
-            "Defaults to <tt>'%s: %s' % (handler.description, instance)</tt>"
+            "Defaults to <tt>'%s: %s' % (ugettext(handler.description), instance)</tt>"
         ))
     ignore_period = models.CharField(_("ignore period"), max_length=16, blank=True,
         help_text=_("Period in which orders will be ignored if cancelled. "
@@ -129,11 +144,13 @@ class Service(models.Model):
             (ANUAL, _("Anual data")),
         ),
         default=BILLING_PERIOD)
-    rate_algorithm = models.CharField(_("rate algorithm"), max_length=16,
+    rate_algorithm = models.CharField(_("rate algorithm"), max_length=64,
+        choices=rate_class.get_choices(),
+        default=rate_class.get_default(),
         help_text=string_concat(_("Algorithm used to interprete the rating table."), *[
             string_concat('<br>&nbsp;&nbsp;', method.verbose_name, ': ', method.help_text)
                 for name, method in rate_class.get_methods().items()
-        ]), choices=rate_class.get_choices(), default=rate_class.get_choices()[0][0])
+        ]))
     on_cancel = models.CharField(_("on cancel"), max_length=16,
         help_text=_("Defines the cancellation behaviour of this service."),
         choices=(
@@ -152,19 +169,10 @@ class Service(models.Model):
         ),
         default=PREPAY)
     
+    objects = ServiceQuerySet.as_manager()
+    
     def __str__(self):
         return self.description
-    
-    @classmethod
-    def get_services(cls, instance):
-        cache = caches.get_request_cache()
-        ct = ContentType.objects.get_for_model(instance)
-        key = 'services.Service-%i' % ct.pk
-        services = cache.get(key)
-        if services is None:
-            services = cls.objects.filter(content_type=ct, is_active=True)
-            cache.set(key, services)
-        return services
     
     @cached_property
     def handler(self):
@@ -180,6 +188,7 @@ class Service(models.Model):
                 'content_type': (self.handler.validate_content_type, self),
                 'match': (self.handler.validate_match, self),
                 'metric': (self.handler.validate_metric, self),
+                'order_description': (self.handler.validate_order_description, self),
             })
         
     def get_pricing_period(self):
@@ -210,37 +219,46 @@ class Service(models.Model):
                 if counter >= metric:
                     counter = metric
                     accumulated += (counter - ant_counter) * rate['price']
+                    accumulated = round(accumulated, 2)
                     return decimal.Decimal(str(accumulated))
                 ant_counter = counter
                 accumulated += rate['price'] * rate['quantity']
+            raise RuntimeError("Rating algorithm bad result")
         else:
             if metric < position:
                 raise ValueError("Metric can not be less than the position.")
             for rate in rates:
                 counter += rate['quantity']
                 if counter >= position:
+                    price = round(rate['price'], 2)
                     return decimal.Decimal(str(rate['price']))
-
+            raise RuntimeError("Rating algorithm bad result")
+    
     def get_rates(self, account, cache=True):
         # rates are cached per account
         if not cache:
             return self.rates.by_account(account)
         if not hasattr(self, '__cached_rates'):
             self.__cached_rates = {}
-        rates = self.__cached_rates.get(account.id, self.rates.by_account(account))
-        return rates
+        try:
+            return self.__cached_rates[account.id]
+        except KeyError:
+            rates = self.rates.by_account(account)
+            self.__cached_rates[account.id] = rates
+            return rates
     
     @property
     def rate_method(self):
         return rate_class.get_methods()[self.rate_algorithm]
     
     def update_orders(self, commit=True):
-        order_model = get_model(settings.SERVICES_ORDER_MODEL)
+        order_model = apps.get_model(settings.SERVICES_ORDER_MODEL)
+        manager = order_model.objects
         related_model = self.content_type.model_class()
         updates = []
-        for instance in related_model.objects.select_related('account').all():
-            updates += order_model.update_orders(instance, service=self, commit=commit)
+        queryset = related_model.objects.all()
+        if related_model._meta.model_name != 'account':
+            queryset = queryset.select_related('account').all()
+        for instance in queryset:
+            updates += manager.update_by_instance(instance, service=self, commit=commit)
         return updates
-
-
-ModelTranslation.register(Service, ('description',))

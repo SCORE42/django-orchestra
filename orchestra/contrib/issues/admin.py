@@ -1,5 +1,5 @@
 from django import forms
-from django.conf.urls import patterns
+from django.conf.urls import url
 from django.contrib import admin
 from django.core.urlresolvers import reverse
 from django.db import models
@@ -9,7 +9,7 @@ from django.utils.html import strip_tags
 from django.utils.translation import ugettext_lazy as _
 from markdown import markdown
 
-from orchestra.admin import ChangeListDefaultFilter, ExtendedModelAdmin#, ChangeViewActions
+from orchestra.admin import ExtendedModelAdmin
 from orchestra.admin.utils import admin_link, admin_colored, wrap_admin_view, admin_date
 from orchestra.contrib.contacts.models import Contact
 
@@ -42,8 +42,8 @@ class MessageReadOnlyInline(admin.TabularInline):
     model = Message
     extra = 0
     can_delete = False
-    fields = ['content_html']
-    readonly_fields = ['content_html']
+    fields = ('content_html',)
+    readonly_fields = ('content_html',)
     
     class Media:
         css = {
@@ -64,7 +64,6 @@ class MessageReadOnlyInline(admin.TabularInline):
         return header + content
     content_html.short_description = _("Content")
     content_html.allow_tags = True
-
     
     def has_add_permission(self, request):
         return False
@@ -79,7 +78,7 @@ class MessageInline(admin.TabularInline):
     max_num = 1
     form = MessageInlineForm
     can_delete = False
-    fields = ['content']
+    fields = ('content',)
     
     def get_formset(self, request, obj=None, **kwargs):
         """ hook request.user on the inline form """
@@ -93,14 +92,14 @@ class MessageInline(admin.TabularInline):
 
 
 class TicketInline(admin.TabularInline):
-    fields = [
+    fields = (
         'ticket_id', 'subject', 'creator_link', 'owner_link', 'colored_state',
         'colored_priority', 'created', 'updated'
-    ]
-    readonly_fields =  [
+    )
+    readonly_fields = (
         'ticket_id', 'subject', 'creator_link', 'owner_link', 'colored_state',
         'colored_priority', 'created', 'updated'
-    ]
+    )
     model = Ticket
     extra = 0
     max_num = 0
@@ -118,36 +117,35 @@ class TicketInline(admin.TabularInline):
     ticket_id.allow_tags = True
 
 
-class TicketAdmin(ChangeListDefaultFilter, ExtendedModelAdmin):
-    list_display = [
+class TicketAdmin(ExtendedModelAdmin):
+    list_display = (
         'unbold_id', 'bold_subject', 'display_creator', 'display_owner',
         'display_queue', 'display_priority', 'display_state', 'updated'
-    ]
+    )
     list_display_links = ('unbold_id', 'bold_subject')
-    list_filter = [
-        MyTicketsListFilter, 'queue__name', 'priority', TicketStateListFilter,
-    ]
+    list_filter = (
+        MyTicketsListFilter, 'queue', 'priority', TicketStateListFilter,
+    )
     default_changelist_filters = (
-        ('my_tickets', lambda r: 'True' if not r.user.is_superuser else 'False'),
-        ('state', 'OPEN')
+        ('state', 'OPEN'),
     )
     date_hierarchy = 'created_at'
-    search_fields = [
+    search_fields = (
         'id', 'subject', 'creator__username', 'creator__email', 'queue__name',
         'owner__username'
-    ]
-    actions = [
+    )
+    actions = (
         mark_as_unread, mark_as_read, 'delete_selected', reject_tickets,
         resolve_tickets, close_tickets, take_tickets
-    ]
-    sudo_actions = ['delete_selected']
-    change_view_actions = [
+    )
+    sudo_actions = ('delete_selected',)
+    change_view_actions = (
         resolve_tickets, close_tickets, reject_tickets, take_tickets
-    ]
+    )
 #    change_form_template = "admin/orchestra/change_form.html"
     form = TicketForm
-    add_inlines = []
-    inlines = [ MessageReadOnlyInline, MessageInline ]
+    add_inlines = ()
+    inlines = (MessageReadOnlyInline, MessageInline)
     readonly_fields = (
         'display_summary', 'display_queue', 'display_owner', 'display_state',
         'display_priority'
@@ -190,7 +188,7 @@ class TicketAdmin(ChangeListDefaultFilter, ExtendedModelAdmin):
     display_creator = admin_link('creator')
     display_queue = admin_link('queue')
     display_owner = admin_link('owner')
-    updated = admin_date('updated')
+    updated = admin_date('updated_at')
     display_state = admin_colored('state', colors=STATE_COLORS, bold=False)
     display_priority = admin_colored('priority', colors=PRIORITY_COLORS, bold=False)
     
@@ -244,11 +242,10 @@ class TicketAdmin(ChangeListDefaultFilter, ExtendedModelAdmin):
     
     def get_urls(self):
         """ add markdown preview url """
-        urls = super(TicketAdmin, self).get_urls()
-        my_urls = patterns('',
-            (r'^preview/$', wrap_admin_view(self, self.message_preview_view))
-        )
-        return my_urls + urls
+        return [
+            url(r'^preview/$',
+                wrap_admin_view(self, self.message_preview_view))
+        ] + super(TicketAdmin, self).get_urls()
     
     def add_view(self, request, form_url='', extra_context=None):
         """ Do not sow message inlines """
@@ -270,8 +267,8 @@ class TicketAdmin(ChangeListDefaultFilter, ExtendedModelAdmin):
         ticket.mark_as_read_by(request.user)
         context = {'title': "Issue #%i - %s" % (ticket.id, ticket.subject)}
         context.update(extra_context or {})
-        return super(TicketAdmin, self).change_view(
-            request, object_id, form_url, extra_context=context)
+        return super(TicketAdmin, self).change_view(request, object_id, form_url=form_url,
+            extra_context=context)
     
     def changelist_view(self, request, extra_context=None):
         # Hook user for bold_subject
@@ -286,10 +283,10 @@ class TicketAdmin(ChangeListDefaultFilter, ExtendedModelAdmin):
 
 
 class QueueAdmin(admin.ModelAdmin):
-    list_display = ['name', 'default', 'num_tickets']
-    actions = [set_default_queue]
-    inlines = [TicketInline]
-    ordering = ['name']
+    list_display = ('name', 'default', 'num_tickets')
+    actions = (set_default_queue,)
+    inlines = (TicketInline,)
+    ordering = ('name',)
     
     class Media:
         css = {
@@ -299,7 +296,7 @@ class QueueAdmin(admin.ModelAdmin):
     def num_tickets(self, queue):
         num = queue.tickets__count
         url = reverse('admin:issues_ticket_changelist')
-        url += '?my_tickets=False&queue=%i' % queue.pk
+        url += '?queue=%i' % queue.pk
         return '<a href="%s">%d</a>' % (url, num)
     num_tickets.short_description = _("Tickets")
     num_tickets.admin_order_field = 'tickets__count'

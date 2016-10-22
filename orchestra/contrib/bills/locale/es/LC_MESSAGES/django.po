@@ -1,0 +1,670 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2015-10-29 10:51+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: actions.py:31
+msgid "View"
+msgstr "Vista"
+
+#: actions.py:42
+msgid "Selected bills should be in open state"
+msgstr "Las facturas seleccionadas están en estado abierto"
+
+#: actions.py:57
+msgid "Selected bills have been closed"
+msgstr "Las facturas seleccionadas han sido cerradas"
+
+#: actions.py:70
+#, python-format
+msgid "<a href=\"%(url)s\">One related transaction</a> has been created"
+msgstr "Se ha creado una <a href=\"%(url)s\">transacción</a>"
+
+#: actions.py:71
+#, python-format
+msgid "<a href=\"%(url)s\">%(num)i related transactions</a> have been created"
+msgstr "Se han creado <a href=\"%(url)s\">%(num)i transacciones</a>"
+
+#: actions.py:77
+msgid "Are you sure about closing the following bills?"
+msgstr "Estás a punto de cerrar las sigüientes facturas. ¿Estás seguro?"
+
+#: actions.py:78
+msgid ""
+"Once a bill is closed it can not be further modified.</p><p>Please select a "
+"payment source for the selected bills"
+msgstr ""
+"Una vez cerrada la factura ya no se podrá modificar.</p><p>Por favor "
+"seleciona un metodo de pago para las facturas seleccionadas"
+
+#: actions.py:91
+msgid "Close"
+msgstr "Cerrar"
+
+#: actions.py:109
+msgid "One bill has been sent."
+msgstr "Se ha enviado una factura"
+
+#: actions.py:110
+#, python-format
+msgid "%i bills have been sent."
+msgstr ""
+
+#: actions.py:117
+msgid "Resend"
+msgstr ""
+
+#: actions.py:137
+msgid "Download"
+msgstr "Descarga"
+
+#: actions.py:153
+msgid "C.S.D."
+msgstr ""
+
+#: actions.py:155
+msgid "Close, send and download bills in one shot."
+msgstr ""
+
+#: actions.py:216
+#, python-format
+msgid "%(norders)s orders and %(nlines)s lines undoed."
+msgstr ""
+
+#: actions.py:235
+msgid "Lines moved"
+msgstr ""
+
+#: actions.py:248
+msgid "Selected bills should be in closed state"
+msgstr "Las facturas seleccionadas están en estado abierto"
+
+#: actions.py:265
+#, python-format
+msgid "%(type)s of %(related_type)s %(number)s and creation date %(date)s"
+msgstr "%(type)s de %(related_type)s %(number)s con fecha de creación %(date)s"
+
+#: actions.py:272
+#, python-format
+msgid "%(related_type)s %(number)s subtotal for tax %(tax)s%%"
+msgstr "%(related_type)s %(number)s subtotal %(tax)s%%"
+
+#: actions.py:288
+#, python-format
+msgid "<a href=\"%(url)s\">One amendment bill</a> have been generated."
+msgstr "Se ha creado una <a href=\"%(url)s\">transacción</a>"
+
+#: actions.py:289
+#, python-format
+msgid "<a href=\"%(url)s\">%(num)i amendment bills</a> have been generated."
+msgstr "Se han creado <a href=\"%(url)s\">%(num)i transacciones</a>"
+
+#: actions.py:292
+msgid "Amend"
+msgstr ""
+
+#: admin.py:58 admin.py:103 admin.py:140 forms.py:11
+#: templates/admin/bills/bill/report.html:43
+#: templates/admin/bills/bill/report.html:70
+msgid "Total"
+msgstr ""
+
+#: admin.py:89
+msgid "Description"
+msgstr ""
+
+#: admin.py:97
+msgid "Subtotal"
+msgstr ""
+
+#: admin.py:130
+msgid "Is open"
+msgstr ""
+
+#: admin.py:135
+msgid "Subline"
+msgstr ""
+
+#: admin.py:167
+msgid "No bills selected."
+msgstr ""
+
+#: admin.py:174
+#, python-format
+msgid "Manage %s bill lines."
+msgstr ""
+
+#: admin.py:176
+msgid "Bill not in open state."
+msgstr ""
+
+#: admin.py:179
+msgid "Not all bills are in open state."
+msgstr ""
+
+#: admin.py:180
+msgid "Manage bill lines of multiple bills."
+msgstr ""
+
+#: admin.py:204
+msgid "Dates"
+msgstr ""
+
+#: admin.py:209
+msgid "Raw"
+msgstr ""
+
+#: admin.py:235 models.py:73
+msgid "Created"
+msgstr ""
+
+#: admin.py:236
+#, fuzzy
+#| msgid "Close"
+msgid "Closed"
+msgstr "Cerrar"
+
+#: admin.py:237
+#, fuzzy
+#| msgid "updated on"
+msgid "Updated"
+msgstr "actualizada en"
+
+#: admin.py:246
+#, fuzzy
+#| msgid "Amended"
+msgid "Amends"
+msgstr "Quota rectificativa"
+
+#: admin.py:252
+msgid "lines"
+msgstr ""
+
+#: admin.py:257 filters.py:46 templates/bills/microspective.html:118
+msgid "total"
+msgstr ""
+
+#: admin.py:265 models.py:104 models.py:460
+msgid "type"
+msgstr ""
+
+#: admin.py:282
+msgid "This bill has been amended, this value may not be valid."
+msgstr ""
+
+#: admin.py:287
+msgid "Payment"
+msgstr "Pago"
+
+#: filters.py:21
+msgid "All"
+msgstr ""
+
+#: filters.py:22 models.py:88
+msgid "Invoice"
+msgstr "Factura"
+
+#: filters.py:23 models.py:90
+msgid "Fee"
+msgstr "Cuota de socio"
+
+#: filters.py:24
+msgid "Pro-forma"
+msgstr ""
+
+#: filters.py:25
+msgid "Amendment fee"
+msgstr "Cuota rectificativa"
+
+#: filters.py:26 models.py:89
+msgid "Amendment invoice"
+msgstr "Factura rectificativa"
+
+#: filters.py:68
+msgid "has bill contact"
+msgstr ""
+
+#: filters.py:73
+msgid "Yes"
+msgstr ""
+
+#: filters.py:74
+msgid "No"
+msgstr ""
+
+#: filters.py:85
+msgid "payment state"
+msgstr "Pago"
+
+#: filters.py:90 models.py:72
+msgid "Open"
+msgstr ""
+
+#: filters.py:91 models.py:76
+msgid "Paid"
+msgstr ""
+
+#: filters.py:92
+msgid "Pending"
+msgstr ""
+
+#: filters.py:93 models.py:79
+msgid "Bad debt"
+msgstr ""
+
+#: filters.py:135
+#, fuzzy
+#| msgid "Amended"
+msgid "amended"
+msgstr "Quota rectificativa"
+
+#: filters.py:140
+#, fuzzy
+#| msgid "Due date"
+msgid "Closed amends"
+msgstr "Fecha de pago"
+
+#: filters.py:141
+msgid "Open or closed amends"
+msgstr ""
+
+#: filters.py:142
+#, fuzzy
+#| msgid "closed on"
+msgid "No closed amends"
+msgstr "cerrada en"
+
+#: filters.py:143
+msgid "No amends"
+msgstr ""
+
+#: forms.py:9 templates/admin/bills/bill/report.html:64
+msgid "Number"
+msgstr ""
+
+#: forms.py:10
+msgid "Account"
+msgstr ""
+
+#: forms.py:12
+msgid "Type"
+msgstr ""
+
+#: forms.py:13
+msgid "Source"
+msgstr ""
+
+#: helpers.py:10
+msgid ""
+"{relation} account \"{account}\" does not have a declared invoice contact. "
+"You should <a href=\"{url}#invoicecontact-group\">provide one</a>"
+msgstr ""
+
+#: helpers.py:17
+msgid "Related"
+msgstr ""
+
+#: helpers.py:24
+msgid "Main"
+msgstr ""
+
+#: models.py:24 models.py:100
+msgid "account"
+msgstr ""
+
+#: models.py:26
+msgid "name"
+msgstr ""
+
+#: models.py:27
+msgid "Account full name will be used when left blank."
+msgstr ""
+
+#: models.py:28
+msgid "address"
+msgstr ""
+
+#: models.py:29
+msgid "city"
+msgstr ""
+
+#: models.py:31
+msgid "zip code"
+msgstr ""
+
+#: models.py:32
+msgid "Enter a valid zipcode."
+msgstr ""
+
+#: models.py:33
+msgid "country"
+msgstr ""
+
+#: models.py:36 templates/admin/bills/bill/report.html:65
+msgid "VAT number"
+msgstr ""
+
+#: models.py:74
+msgid "Processed"
+msgstr ""
+
+#: models.py:75
+msgid "Amended"
+msgstr "Quota rectificativa"
+
+#: models.py:77
+msgid "Incomplete"
+msgstr ""
+
+#: models.py:78
+msgid "Executed"
+msgstr ""
+
+#: models.py:91
+msgid "Amendment Fee"
+msgstr ""
+
+#: models.py:92
+msgid "Pro forma"
+msgstr ""
+
+#: models.py:99
+msgid "number"
+msgstr "número"
+
+#: models.py:102
+msgid "amend of"
+msgstr "rectificación de"
+
+#: models.py:105
+msgid "created on"
+msgstr "creado en"
+
+#: models.py:106
+msgid "closed on"
+msgstr "cerrada en"
+
+#: models.py:107
+msgid "open"
+msgstr "abierta"
+
+#: models.py:108
+msgid "sent"
+msgstr "enviada"
+
+#: models.py:109
+msgid "due on"
+msgstr "vencimiento"
+
+#: models.py:110
+msgid "updated on"
+msgstr "actualizada en"
+
+#: models.py:112
+msgid "comments"
+msgstr "comentarios"
+
+#: models.py:113
+msgid "HTML"
+msgstr "HTML"
+
+#: models.py:194
+#, python-format
+msgid "Type %s is not an amendment."
+msgstr ""
+
+#: models.py:196
+msgid "Amend of related account doesn't match bill account."
+msgstr ""
+
+#: models.py:198
+#, fuzzy
+#| msgid "Selected bills should be in open state"
+msgid "Related invoice is in open state."
+msgstr "Las facturas seleccionadas están en estado abierto"
+
+#: models.py:200
+msgid "Related invoice is an amendment."
+msgstr ""
+
+#: models.py:392
+msgid "bill"
+msgstr "factura"
+
+#: models.py:393 models.py:458 templates/bills/microspective.html:73
+msgid "description"
+msgstr "descripción"
+
+#: models.py:394
+msgid "rate"
+msgstr "tarifa"
+
+#: models.py:395
+msgid "quantity"
+msgstr "cantidad"
+
+#: models.py:397
+msgid "Verbose quantity"
+msgstr "Cantidad"
+
+#: models.py:398 templates/admin/bills/bill/report.html:47
+#: templates/bills/microspective.html:77
+#: templates/bills/microspective.html:111
+msgid "subtotal"
+msgstr "subtotal"
+
+#: models.py:399
+msgid "tax"
+msgstr "impuesto"
+
+#: models.py:400
+msgid "start"
+msgstr "inicio"
+
+#: models.py:401
+msgid "end"
+msgstr "fín"
+
+#: models.py:403
+msgid "Informative link back to the order"
+msgstr ""
+
+#: models.py:404
+msgid "order billed"
+msgstr ""
+
+#: models.py:405
+msgid "order billed until"
+msgstr ""
+
+#: models.py:406
+msgid "created"
+msgstr "creado"
+
+#: models.py:408
+msgid "amended line"
+msgstr "linea rectificativa"
+
+#: models.py:451
+msgid "Volume"
+msgstr "Volumen"
+
+#: models.py:452
+msgid "Compensation"
+msgstr "Compensación"
+
+#: models.py:453
+msgid "Other"
+msgstr "Otro"
+
+#: models.py:457
+msgid "bill line"
+msgstr "linea de factura"
+
+#: templates/admin/bills/bill/report.html:42
+msgid "Summary"
+msgstr ""
+
+#: templates/admin/bills/bill/report.html:47
+#: templates/admin/bills/bill/report.html:51
+#: templates/admin/bills/bill/report.html:69
+#: templates/bills/microspective.html:111
+#: templates/bills/microspective.html:114
+msgid "VAT"
+msgstr "IVA"
+
+#: templates/admin/bills/bill/report.html:51
+#: templates/bills/microspective.html:114
+msgid "taxes"
+msgstr "impuestos"
+
+#: templates/admin/bills/bill/report.html:56
+#: templates/admin/bills/billline/report.html:60
+#: templates/bills/microspective.html:53
+msgid "TOTAL"
+msgstr "TOTAL"
+
+#: templates/admin/bills/bill/report.html:66
+msgid "Contact"
+msgstr "Contacto"
+
+#: templates/admin/bills/bill/report.html:67
+#, fuzzy
+#| msgid "Due date"
+msgid "Close date"
+msgstr "Fecha de pago"
+
+#: templates/admin/bills/bill/report.html:68
+msgid "Base"
+msgstr "Base"
+
+#: templates/admin/bills/billline/report.html:42
+msgid "Services"
+msgstr ""
+
+#: templates/admin/bills/billline/report.html:43
+msgid "Active"
+msgstr ""
+
+#: templates/admin/bills/billline/report.html:44
+msgid "Cancelled"
+msgstr ""
+
+#: templates/admin/bills/billline/report.html:45
+msgid "Nominal price"
+msgstr ""
+
+#: templates/admin/bills/billline/report.html:46
+#, fuzzy
+#| msgid "quantity"
+msgid "Quantity"
+msgstr "cantidad"
+
+#: templates/admin/bills/billline/report.html:47
+msgid "Profit"
+msgstr ""
+
+#: templates/admin/bills/change_list.html:9
+#, fuzzy
+#| msgid "bill"
+msgid "Add bill"
+msgstr "factura"
+
+#: templates/bills/microspective-fee.html:107
+msgid "Due date"
+msgstr "Fecha de pago"
+
+#: templates/bills/microspective-fee.html:108
+#, python-format
+msgid "On %(bank_account)s"
+msgstr "En %(bank_account)s"
+
+#: templates/bills/microspective-fee.html:114
+#, python-format
+msgid "From %(ini)s to %(end)s"
+msgstr "Desde %(ini)s hasta %(end)s"
+
+#: templates/bills/microspective-fee.html:121
+msgid ""
+"\n"
+"<strong>With your membership</strong> you are supporting ...\n"
+msgstr ""
+
+#: templates/bills/microspective.html:49
+msgid "DUE DATE"
+msgstr "VENCIMIENTO"
+
+#: templates/bills/microspective.html:57
+#, python-format
+msgid "%(bill_type)s DATE"
+msgstr "FECHA %(bill_type)s"
+
+#: templates/bills/microspective.html:74
+msgid "period"
+msgstr "periodo"
+
+#: templates/bills/microspective.html:75
+msgid "hrs/qty"
+msgstr "hrs/cant"
+
+#: templates/bills/microspective.html:76
+msgid "rate/price"
+msgstr "tarifa/precio"
+
+#: templates/bills/microspective.html:131
+msgid "COMMENTS"
+msgstr "COMENTARIOS"
+
+#: templates/bills/microspective.html:138
+msgid "PAYMENT"
+msgstr "PAGO"
+
+#: templates/bills/microspective.html:142
+#, python-format
+msgid ""
+"\n"
+"                    You can pay our <i>%(type)s</i> by bank transfer.<br>\n"
+"                    Please make sure to state your name and the <i>%(type)s</"
+"i> number.\n"
+"                    Our bank account number is <br>\n"
+"                    "
+msgstr ""
+"\n"
+"Puedes pagar esta <i>%(type)s</i> por transferencia bancaria.<br>Incluye tu "
+"nombre y el número de <i>%(type)s</i>. Nuestra cuenta bancaria es"
+
+#: templates/bills/microspective.html:151
+msgid "QUESTIONS"
+msgstr "PREGUNTAS"
+
+#: templates/bills/microspective.html:152
+#, python-format
+msgid ""
+"\n"
+"            If you have any question about your <i>%(type)s</i>, please\n"
+"            feel free to write us at %(email)s. We will reply as soon as we "
+"get\n"
+"            your message.\n"
+"            "
+msgstr ""
+"\n"
+"            Si tienes alguna duda o pregunta sobre tu <i>%(type)s</i>, por "
+"favor\n"
+"            contacta con nosotros en %(email)s. Te responderemos lo más "
+"rapidamente posible.\n"
+"            "

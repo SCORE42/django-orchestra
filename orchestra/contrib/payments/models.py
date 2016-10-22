@@ -4,7 +4,7 @@ from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 from jsonfield import JSONField
 
-from orchestra.core import accounts
+from orchestra.models.fields import PrivateFileField
 from orchestra.models.queryset import group_by
 
 from . import settings
@@ -66,7 +66,10 @@ class TransactionQuerySet(models.QuerySet):
         source = kwargs.get('source')
         if source is None or not hasattr(source.method_class, 'process'):
             # Manual payments don't need processing
-            kwargs['state']=self.model.WAITTING_EXECUTION
+            kwargs['state'] = self.model.WAITTING_EXECUTION
+        amount = kwargs.get('amount')
+        if amount == 0:
+            kwargs['state'] = self.model.SECURED
         return super(TransactionQuerySet, self).create(**kwargs)
     
     def secured(self):
@@ -76,7 +79,7 @@ class TransactionQuerySet(models.QuerySet):
         return self.exclude(state=Transaction.REJECTED)
     
     def amount(self):
-        return next(iter(self.aggregate(models.Sum('amount')).values()))
+        return next(iter(self.aggregate(models.Sum('amount')).values())) or 0
     
     def processing(self):
         return self.filter(state__in=[Transaction.EXECUTED, Transaction.WAITTING_EXECUTION])
@@ -95,13 +98,23 @@ class Transaction(models.Model):
         (SECURED, _("Secured")),
         (REJECTED, _("Rejected")),
     )
+    STATE_HELP = {
+        WAITTING_PROCESSING: _("The transaction is created and requires processing by the "
+                               "specific payment method."),
+        WAITTING_EXECUTION: _("The transaction is processed and its pending execution on "
+                              "the related financial institution."),
+        EXECUTED: _("The transaction is executed on the financial institution."),
+        SECURED: _("The transaction ammount is secured."),
+        REJECTED: _("The transaction has failed and the ammount is lost, a new transaction "
+                    "should be created for recharging."),
+    }
     
     bill = models.ForeignKey('bills.bill', verbose_name=_("bill"),
         related_name='transactions')
-    source = models.ForeignKey(PaymentSource, null=True, blank=True,
+    source = models.ForeignKey(PaymentSource, null=True, blank=True, on_delete=models.SET_NULL,
         verbose_name=_("source"), related_name='transactions')
-    process = models.ForeignKey('payments.TransactionProcess', null=True,
-        blank=True, verbose_name=_("process"), related_name='transactions')
+    process = models.ForeignKey('payments.TransactionProcess', null=True, blank=True,
+        on_delete=models.SET_NULL, verbose_name=_("process"), related_name='transactions')
     state = models.CharField(_("state"), max_length=32, choices=STATES,
         default=WAITTING_PROCESSING)
     amount = models.DecimalField(_("amount"), max_digits=12, decimal_places=2)
@@ -112,7 +125,7 @@ class Transaction(models.Model):
     objects = TransactionQuerySet.as_manager()
     
     def __str__(self):
-        return "Transaction #{}".format(self.id)
+        return "#%i" % self.id
     
     @property
     def account(self):
@@ -122,31 +135,33 @@ class Transaction(models.Model):
         if not self.pk:
             amount = self.bill.transactions.exclude(state=self.REJECTED).amount()
             if amount >= self.bill.total:
-                raise ValidationError(_("New transactions can not be allocated for this bill."))
+                raise ValidationError(
+                    _("Bill %(number)s already has valid transactions that cover bill total amount (%(amount)s).") % {
+                        'number': self.bill.number,
+                        'amount': amount,
+                    }
+                )
     
-    def check_state(self, *args):
-        if self.state not in args:
-            raise TypeError("Transaction not in %s" % ' or '.join(args))
+    def get_state_help(self):
+        if self.source:
+            return self.source.method_instance.state_help.get(self.state) or self.STATE_HELP.get(self.state)
+        return self.STATE_HELP.get(self.state)
     
     def mark_as_processed(self):
-        self.check_state(self.WAITTING_PROCESSING)
         self.state = self.WAITTING_EXECUTION
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'modified_at'))
     
     def mark_as_executed(self):
-        self.check_state(self.WAITTING_EXECUTION)
         self.state = self.EXECUTED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'modified_at'))
     
     def mark_as_secured(self):
-        self.check_state(self.EXECUTED)
         self.state = self.SECURED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'modified_at'))
     
     def mark_as_rejected(self):
-        self.check_state(self.EXECUTED)
         self.state = self.REJECTED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'modified_at'))
 
 
 class TransactionProcess(models.Model):
@@ -165,9 +180,9 @@ class TransactionProcess(models.Model):
     )
     
     data = JSONField(_("data"), blank=True)
-    file = models.FileField(_("file"), blank=True)
+    file = PrivateFileField(_("file"), blank=True)
     state = models.CharField(_("state"), max_length=16, choices=STATES, default=CREATED)
-    created_at = models.DateTimeField(_("created"), auto_now_add=True)
+    created_at = models.DateTimeField(_("created"), auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(_("updated"), auto_now=True)
     
     class Meta:
@@ -176,31 +191,20 @@ class TransactionProcess(models.Model):
     def __str__(self):
         return '#%i' % self.id
     
-    def check_state(self, *args):
-        if self.state not in args:
-            raise TypeError("Transaction process not in %s" % ' or '.join(args))
-    
     def mark_as_executed(self):
-        self.check_state(self.CREATED)
         self.state = self.EXECUTED
         for transaction in self.transactions.all():
             transaction.mark_as_executed()
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'updated_at'))
     
     def abort(self):
-        self.check_state(self.CREATED, self.EXCECUTED)
         self.state = self.ABORTED
-        for transaction in self.transaction.all():
-            transaction.mark_as_aborted()
-        self.save(update_fields=['state'])
+        for transaction in self.transactions.all():
+            transaction.mark_as_rejected()
+        self.save(update_fields=('state', 'updated_at'))
     
     def commit(self):
-        self.check_state(self.CREATED, self.EXECUTED)
         self.state = self.COMMITED
         for transaction in self.transactions.processing():
             transaction.mark_as_secured()
-        self.save(update_fields=['state'])
-
-
-accounts.register(PaymentSource)
-accounts.register(Transaction)
+        self.save(update_fields=('state', 'updated_at'))

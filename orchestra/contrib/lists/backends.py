@@ -9,10 +9,81 @@ from . import settings
 from .models import List
 
 
-class MailmanBackend(ServiceController):
-    verbose_name = "Mailman"
+class MailmanVirtualDomainController(ServiceController):
+    """
+    Only syncs virtualdomains used on mailman addresses
+    """
+    verbose_name = _("Mailman virtdomain-only")
     model = 'lists.List'
-    addresses = [
+    doc_settings = (settings,
+        ('LISTS_VIRTUAL_ALIAS_DOMAINS_PATH',)
+    )
+    
+    def is_hosted_domain(self, domain):
+        """ whether or not domain MX points to this server """
+        return domain.has_default_mx()
+    
+    def include_virtual_alias_domain(self, context):
+        domain = context['address_domain']
+        if domain and self.is_hosted_domain(domain):
+            self.append(textwrap.dedent("""
+                # Add virtual domain %(address_domain)s
+                [[ $(grep '^\s*%(address_domain)s\s*$' %(virtual_alias_domains)s) ]] || {
+                    echo '%(address_domain)s' >> %(virtual_alias_domains)s
+                    UPDATED_VIRTUAL_ALIAS_DOMAINS=1
+                }""") % context
+            )
+    
+    def is_last_domain(self, domain):
+        return not List.objects.filter(address_domain=domain).exists()
+    
+    def exclude_virtual_alias_domain(self, context):
+        domain = context['address_domain']
+        if domain and self.is_last_domain(domain):
+            self.append(textwrap.dedent("""
+                # Remove %(address_domain)s from virtual domains
+                sed -i '/^%(address_domain)s\s*$/d' %(virtual_alias_domains)s\
+                """) % context
+            )
+    
+    def save(self, mail_list):
+        context = self.get_context(mail_list)
+        self.include_virtual_alias_domain(context)
+    
+    def delete(self, mail_list):
+        context = self.get_context(mail_list)
+        self.exclude_virtual_alias_domain(context)
+    
+    def commit(self):
+        context = self.get_context_files()
+        self.append(textwrap.dedent("""
+            # Apply changes if needed
+            if [[ $UPDATED_VIRTUAL_ALIAS_DOMAINS == 1 ]]; then
+                service postfix reload
+            fi""") % context
+        )
+        super(MailmanVirtualDomainController, self).commit()
+    
+    def get_context_files(self):
+        return {
+            'virtual_alias_domains': settings.LISTS_VIRTUAL_ALIAS_DOMAINS_PATH,
+        }
+    
+    def get_context(self, mail_list):
+        context = self.get_context_files()
+        context.update({
+            'address_domain': mail_list.address_domain,
+        })
+        return replace(context, "'", '"')
+
+
+class MailmanController(MailmanVirtualDomainController):
+    """
+    Mailman 2 backend based on <tt>newlist</tt>, it handles custom domains.
+    Includes <tt>MailmanVirtualDomainController</tt>
+    """
+    verbose_name = "Mailman"
+    address_suffixes = [
         '',
         '-admin',
         '-bounces',
@@ -24,71 +95,71 @@ class MailmanBackend(ServiceController):
         '-subscribe',
         '-unsubscribe'
     ]
-    
-    def include_virtual_alias_domain(self, context):
-        if context['address_domain']:
-            self.append(textwrap.dedent("""
-                [[ $(grep '^\s*%(address_domain)s\s*$' %(virtual_alias_domains)s) ]] || {
-                    echo '%(address_domain)s' >> %(virtual_alias_domains)s
-                    UPDATED_VIRTUAL_ALIAS_DOMAINS=1
-                }""") % context
-            )
-    
-    def exclude_virtual_alias_domain(self, context):
-        address_domain = context['address_domain']
-        if not List.objects.filter(address_domain=address_domain).exists():
-            self.append("sed -i '/^%(address_domain)s\s*$/d' %(virtual_alias_domains)s" % context)
+    doc_settings = (settings, (
+        'LISTS_VIRTUAL_ALIAS_PATH',
+        'LISTS_VIRTUAL_ALIAS_DOMAINS_PATH',
+        'LISTS_DEFAULT_DOMAIN',
+        'LISTS_MAILMAN_ROOT_DIR'
+    ))
     
     def get_virtual_aliases(self, context):
         aliases = ['# %(banner)s' % context]
-        for address in self.addresses:
-            context['address'] = address
-            aliases.append("%(address_name)s%(address)s@%(domain)s\t%(name)s%(address)s" % context)
+        for suffix in self.address_suffixes:
+            context['suffix'] = suffix
+            # Because mailman doesn't properly handle lists aliases we need two virtual aliases
+            aliases.append("%(address_name)s%(suffix)s@%(domain)s\t%(name)s%(suffix)s" % context)
+            if context['address_name'] != context['name']:
+                # And another with the original list name; Mailman generates links with it
+                aliases.append("%(name)s%(suffix)s@%(domain)s\t%(name)s%(suffix)s" % context)
         return '\n'.join(aliases)
     
     def save(self, mail_list):
         context = self.get_context(mail_list)
         # Create list
-        self.append(textwrap.dedent("""\
+        self.append(textwrap.dedent("""
+            # Create list %(name)s
             [[ ! -e '%(mailman_root)s/lists/%(name)s' ]] && {
                 newlist --quiet --emailhost='%(domain)s' '%(name)s' '%(admin)s' '%(password)s'
             }""") % context)
         # Custom domain
         if mail_list.address:
-            context['aliases'] = self.get_virtual_aliases(context)
-            # Preserve indentation
+            context.update({
+                'aliases': self.get_virtual_aliases(context),
+                'num_entries': 2 if context['address_name'] != context['name'] else 1,
+            })
             self.append(textwrap.dedent("""\
-                if [[ ! $(grep '\s\s*%(name)s\s*$' %(virtual_alias)s) ]]; then
-                    echo '%(aliases)s' >> %(virtual_alias)s
+                # Create list alias for custom domain
+                aliases='%(aliases)s'
+                if ! grep '\s\s*%(name)s\s*$' %(virtual_alias)s > /dev/null; then
+                    echo "${aliases}" >> %(virtual_alias)s
                     UPDATED_VIRTUAL_ALIAS=1
                 else
-                    if [[ ! $(grep '^\s*%(address_name)s@%(address_domain)s\s\s*%(name)s\s*$' %(virtual_alias)s) ]]; then
-                        sed -i -e '/^.*\s%(name)s\(%(address_regex)s\)\s*$/d' \\
+                    existing=$({ grep -E '^\s*(%(address_name)s|%(name)s)@%(address_domain)s\s\s*%(name)s\s*$' %(virtual_alias)s || test $? -lt 2; }|wc -l)
+                    if [[ $existing -ne %(num_entries)s ]]; then
+                        sed -i -e '/^.*\s%(name)s\(%(suffixes_regex)s\)\s*$/d' \\
                                -e 'N; /^\s*\\n\s*$/d; P; D' %(virtual_alias)s
-                        echo '%(aliases)s' >> %(virtual_alias)s
+                        echo "${aliases}" >> %(virtual_alias)s
                         UPDATED_VIRTUAL_ALIAS=1
                     fi
-                fi""") % context
-            )
-            self.append(
-                'echo "require_explicit_destination = 0" | '
-                '%(mailman_root)s/bin/config_list -i /dev/stdin %(name)s' % context
-            )
-            self.append(textwrap.dedent("""\
-                echo "host_name = '%(address_domain)s'" | \
+                fi
+                echo "require_explicit_destination = 0" | \\
+                    %(mailman_root)s/bin/config_list -i /dev/stdin %(name)s
+                echo "host_name = '%(address_domain)s'" | \\
                     %(mailman_root)s/bin/config_list -i /dev/stdin %(name)s""") % context
             )
         else:
-            # Cleanup shit
             self.append(textwrap.dedent("""\
-                if [[ ! $(grep '\s\s*%(name)s\s*$' %(virtual_alias)s) ]]; then
+                # Cleanup possible ex-custom domain
+                if ! grep '\s\s*%(name)s\s*$' %(virtual_alias)s > /dev/null; then
                     sed -i "/^.*\s%(name)s\s*$/d" %(virtual_alias)s
                 fi""") % context
             )
         # Update
         if context['password'] is not None:
-            self.append(
-                '%(mailman_root)s/bin/change_pw --listname="%(name)s" --password="%(password)s"' % context
+            self.append(textwrap.dedent("""\
+                # Re-set password
+                %(mailman_root)s/bin/change_pw --listname="%(name)s" --password="%(password)s"\
+                """) % context
             )
         self.include_virtual_alias_domain(context)
         if mail_list.active:
@@ -100,10 +171,9 @@ class MailmanBackend(ServiceController):
         context = self.get_context(mail_list)
         self.exclude_virtual_alias_domain(context)
         self.append(textwrap.dedent("""
-            sed -i -e '/^.*\s%(name)s\(%(address_regex)s\)\s*$/d' \\
-                   -e 'N; /^\s*\\n\s*$/d; P; D' %(virtual_alias)s""") % context
-        )
-        self.append(textwrap.dedent("""
+            # Remove list %(name)s
+            sed -i -e '/^.*\s%(name)s\(%(suffixes_regex)s\)\s*$/d' \\
+                   -e 'N; /^\s*\\n\s*$/d; P; D' %(virtual_alias)s
             # Non-existent list archives produce exit code 1
             exit_code=0
             rmlist -a %(name)s || exit_code=$?
@@ -115,12 +185,14 @@ class MailmanBackend(ServiceController):
     def commit(self):
         context = self.get_context_files()
         self.append(textwrap.dedent("""
+            # Apply changes if needed
             if [[ $UPDATED_VIRTUAL_ALIAS == 1 ]]; then
                 postmap %(virtual_alias)s
             fi
             if [[ $UPDATED_VIRTUAL_ALIAS_DOMAINS == 1 ]]; then
                 service postfix reload
-            fi""") % context
+            fi
+            exit $exit_code""") % context
         )
     
     def get_context_files(self):
@@ -130,7 +202,7 @@ class MailmanBackend(ServiceController):
         }
     
     def get_banner(self, mail_list):
-        banner = super(MailmanBackend, self).get_banner()
+        banner = super(MailmanController, self).get_banner()
         return '%s %s' % (banner, mail_list.name)
     
     def get_context(self, mail_list):
@@ -142,86 +214,25 @@ class MailmanBackend(ServiceController):
             'domain': mail_list.address_domain or settings.LISTS_DEFAULT_DOMAIN,
             'address_name': mail_list.get_address_name(),
             'address_domain': mail_list.address_domain,
-            'address_regex': '\|'.join(self.addresses),
+            'suffixes_regex': '\|'.join(self.address_suffixes),
             'admin': mail_list.admin_email,
             'mailman_root': settings.LISTS_MAILMAN_ROOT_DIR,
         })
         return replace(context, "'", '"')
 
 
-class MailmanTrafficBash(ServiceMonitor):
-    model = 'lists.List'
-    resource = ServiceMonitor.TRAFFIC
-    verbose_name = _("Mailman traffic (Bash)")
-    
-    def prepare(self):
-        super(MailmanTraffic, self).prepare()
-        context = {
-            'mailman_log': '%s{,.1}' % settings.LISTS_MAILMAN_POST_LOG_PATH,
-            'current_date': self.current_date.strftime("%Y-%m-%d %H:%M:%S %Z"),
-        }
-        self.append(textwrap.dedent("""\
-            function monitor () {
-                OBJECT_ID=$1
-                # Dates convertions are done server-side because of timezone discrepancies
-                INI_DATE=$(date "+%%Y%%m%%d%%H%%M%%S" -d "$2")
-                END_DATE=$(date '+%%Y%%m%%d%%H%%M%%S' -d '%(current_date)s')
-                LIST_NAME="$3"
-                MAILMAN_LOG=%(mailman_log)s
-                
-                SUBSCRIBERS=$(list_members ${LIST_NAME} | wc -l)
-                {
-                    { grep " post to ${LIST_NAME} " ${MAILMAN_LOG} || echo '\\r'; } \\
-                        | awk -v ini="${INI_DATE}" -v end="${END_DATE}" -v subs="${SUBSCRIBERS}" '
-                            BEGIN {
-                                sum = 0
-                                months["Jan"] = "01"
-                                months["Feb"] = "02"
-                                months["Mar"] = "03"
-                                months["Apr"] = "04"
-                                months["May"] = "05"
-                                months["Jun"] = "06"
-                                months["Jul"] = "07"
-                                months["Aug"] = "08"
-                                months["Sep"] = "09"
-                                months["Oct"] = "10"
-                                months["Nov"] = "11"
-                                months["Dec"] = "12"
-                            } {
-                                # Mar 01 08:29:02 2015
-                                month = months[$1]
-                                day = $2
-                                year = $4
-                                split($3, time, ":")
-                                line_date = year month day time[1] time[2] time[3]
-                                if ( line_date > ini && line_date < end)
-                                    sum += substr($11, 6, length($11)-6)
-                            } END {
-                                print sum * subs
-                            }' || [[ $? == 1 ]] && true
-                } | xargs echo ${OBJECT_ID}
-            }""") % context)
-    
-    def monitor(self, mail_list):
-        context = self.get_context(mail_list)
-        self.append(
-            'monitor %(object_id)i "%(last_date)s" "%(list_name)s"' % context
-        )
-    
-    def get_context(self, mail_list):
-        context = {
-            'list_name': mail_list.name,
-            'object_id': mail_list.pk,
-            'last_date': self.get_last_date(mail_list.pk).strftime("%Y-%m-%d %H:%M:%S %Z"),
-        }
-        return replace(context, "'", '"')
-
-
 class MailmanTraffic(ServiceMonitor):
+    """
+    Parses mailman log file looking for email size and multiples it by <tt>list_members</tt> count.
+    """
     model = 'lists.List'
     resource = ServiceMonitor.TRAFFIC
     verbose_name = _("Mailman traffic")
     script_executable = '/usr/bin/python'
+    monthly_sum_old_values = True
+    doc_settings = (settings,
+        ('LISTS_MAILMAN_POST_LOG_PATH',)
+    )
     
     def prepare(self):
         postlog = settings.LISTS_MAILMAN_POST_LOG_PATH
@@ -235,13 +246,13 @@ class MailmanTraffic(ServiceMonitor):
             import sys
             from datetime import datetime
             from dateutil import tz
-
+            
             def to_local_timezone(date, tzlocal=tz.tzlocal()):
                 date = datetime.strptime(date, '%Y-%m-%d %H:%M:%S %Z')
                 date = date.replace(tzinfo=tz.tzutc())
                 date = date.astimezone(tzlocal)
                 return date
-
+            
             postlogs = {postlogs}
             # Use local timezone
             end_date = to_local_timezone('{current_date}')
@@ -261,24 +272,31 @@ class MailmanTraffic(ServiceMonitor):
                 'Nov': '11',
                 'Dec': '12',
             }}
-
+            mailman_addr = re.compile(r'.*-(admin|bounces|confirm|join|leave|owner|request|subscribe|unsubscribe)@.*|mailman@.*')
+            
             def prepare(object_id, list_name, ini_date):
                 global lists
                 ini_date = to_local_timezone(ini_date)
                 ini_date = int(ini_date.strftime('%Y%m%d%H%M%S'))
                 lists[list_name] = [ini_date, object_id, 0]
-
+            
             def monitor(lists, end_date, months, postlogs):
                 for postlog in postlogs:
                     try:
                         with open(postlog, 'r') as postlog:
                             for line in postlog.readlines():
-                                month, day, time, year, __, __, __, list_name, __, __, size = line.split()[:11]
+                                line = line.split()
+                                if len(line) < 11:
+                                    continue
+                                month, day, time, year, __, __, __, list_name, __, addr, size = line[:11]
                                 try:
                                     list = lists[list_name]
                                 except KeyError:
                                     continue
                                 else:
+                                    # discard mailman messages because of inconsistent POST logging
+                                    if mailman_addr.match(addr):
+                                        continue
                                     date = year + months[month] + day + time.replace(':', '')
                                     if list[0] < int(date) < end_date:
                                         size = size[5:-1]
@@ -288,7 +306,7 @@ class MailmanTraffic(ServiceMonitor):
                                             # anonymized post
                                             pass
                     except IOError as e:
-                        sys.stderr.write(e)
+                        sys.stderr.write(str(e)+'\\n')
                 
                 for list_name, opts in lists.items():
                     __, object_id, size = opts
@@ -297,6 +315,7 @@ class MailmanTraffic(ServiceMonitor):
                         ps = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                         subscribers = ps.communicate()[0].strip()
                         size *= int(subscribers)
+                        sys.stderr.write("%s %s*%s traffic*subscribers\\n" % (object_id, size, subscribers))
                     print object_id, size
             """).format(**context)
         )
@@ -318,8 +337,12 @@ class MailmanTraffic(ServiceMonitor):
 
 
 class MailmanSubscribers(ServiceMonitor):
+    """
+    Monitors number of list subscribers via <tt>list_members</tt>
+    """
     model = 'lists.List'
     verbose_name = _("Mailman subscribers")
+    delete_old_equal_values = True
     
     def monitor(self, mail_list):
         context = self.get_context(mail_list)

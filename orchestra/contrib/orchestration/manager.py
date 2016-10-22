@@ -3,73 +3,74 @@ import threading
 import traceback
 from collections import OrderedDict
 
-from django import db
 from django.core.mail import mail_admins
 
-from orchestra.utils.python import import_class
+from orchestra.utils import db
+from orchestra.utils.python import import_class, OrderedSet
 
 from . import settings, Operation
 from .backends import ServiceBackend
 from .helpers import send_report
 from .models import BackendLog
-from .signals import pre_action, post_action
+from .signals import pre_action, post_action, pre_commit, post_commit, pre_prepare, post_prepare
 
 
 logger = logging.getLogger(__name__)
 router = import_class(settings.ORCHESTRATION_ROUTER)
 
 
-def as_task(execute):
+def keep_log(execute, log, operations):
     def wrapper(*args, **kwargs):
         """ send report """
-        # Tasks run on a separate transaction pool (thread), no need to temper with the transaction
+        # Remember that threads have their oun connection poll
+        # No need to EVER temper with the transaction here
+        log = kwargs['log']
         try:
             log = execute(*args, **kwargs)
-            if log.state != log.SUCCESS:
-                send_report(execute, args, log)
         except Exception as e:
-            subject = 'EXCEPTION executing backend(s) %s %s' % (str(args), str(kwargs))
-            message = traceback.format_exc()
+            trace = traceback.format_exc()
+            log.state = log.EXCEPTION
+            log.stderr += trace
+            log.save()
+            subject = 'EXCEPTION executing backend(s) %s %s' % (args, kwargs)
             logger.error(subject)
-            logger.error(message)
-            mail_admins(subject, message)
+            logger.error(trace)
+            mail_admins(subject, trace)
             # We don't propagate the exception further to avoid transaction rollback
-        else:
-            # Using the wrapper function as threader messenger for the execute output
-            # Absense of it will indicate a failure at this stage
-            wrapper.log = log
-            return log
-    return wrapper
-
-
-def close_connection(execute):
-    """ Threads have their own connection pool, closing it when finishing """
-    def wrapper(*args, **kwargs):
-        try:
-            log = execute(*args, **kwargs)
-        except Exception as e:
-            pass
-        else:
-            wrapper.log = log
         finally:
-            db.connection.close()
+            # Store and log the operation
+            for operation in operations:
+                logger.info("Executed %s" % operation)
+                operation.store(log)
+            if not log.is_success:
+                send_report(execute, args, log)
+            stdout = log.stdout.strip()
+            stdout and logger.debug('STDOUT %s', stdout.encode('ascii', errors='replace').decode())
+            stderr = log.stderr.strip()
+            stderr and logger.debug('STDERR %s', stderr.encode('ascii', errors='replace').decode())
     return wrapper
 
 
 def generate(operations):
     scripts = OrderedDict()
     cache = {}
-    block = False
-    # Generate scripts per server+backend
+    serialize = False
+    # Generate scripts per route+backend
     for operation in operations:
-        logger.debug("Queued %s" % str(operation))
-        if operation.servers is None:
-            operation.servers = router.get_servers(operation, cache=cache)
-        for server in operation.servers:
-            key = (server, operation.backend)
+        logger.debug("Queued %s" % operation)
+        if operation.routes is None:
+            operation.routes = router.objects.get_for_operation(operation, cache=cache)
+        for route in operation.routes:
+            # TODO key by action.async
+            async_action = route.action_is_async(operation.action)
+            key = (route, operation.backend, async_action)
             if key not in scripts:
-                scripts[key] = (operation.backend(), [operation])
-                scripts[key][0].prepare()
+                backend, operations = (operation.backend(), [operation])
+                scripts[key] = (backend, operations)
+                backend.set_head()
+                pre_prepare.send(sender=backend.__class__, backend=backend)
+                backend.prepare()
+                post_prepare.send(sender=backend.__class__, backend=backend)
             else:
                 scripts[key][1].append(operation)
             # Get and call backend action method
@@ -81,64 +82,70 @@ def generate(operations):
                 'instance': operation.instance,
                 'action': operation.action,
             }
+            backend.set_content()
             pre_action.send(**kwargs)
             method(operation.instance)
             post_action.send(**kwargs)
-            if backend.block:
-                block = True
+            if backend.serialize:
+                serialize = True
     for value in scripts.values():
         backend, operations = value
+        backend.set_tail()
+        pre_commit.send(sender=backend.__class__, backend=backend)
         backend.commit()
-    return scripts, block
+        post_commit.send(sender=backend.__class__, backend=backend)
+    return scripts, serialize
 
 
-def execute(scripts, block=False, async=False):
-    """ executes the operations on the servers """
+def execute(scripts, serialize=False, async=None):
+    """
+    executes the operations on the servers
+    
+    serialize: execute one backend at a time
+    async: do not join threads (overrides route.async)
+    """
     if settings.ORCHESTRATION_DISABLE_EXECUTION:
-        logger.info('Orchestration execution is dissabled by ORCHESTRATION_DISABLE_EXECUTION settings.')
+        logger.info('Orchestration execution is dissabled by ORCHESTRATION_DISABLE_EXECUTION.')
         return []
     # Execute scripts on each server
-    threads = []
     executions = []
-    for key, value in scripts.items():
-        server, __ = key
-        backend, operations = value
-        execute = as_task(backend.execute)
-        logger.debug('%s is going to be executed on %s' % (backend, server))
-        if block:
-            # Execute one backend at a time, no need for threads
-            execute(server, async=async)
-        else:
-            execute = close_connection(execute)
-            thread = threading.Thread(target=execute, args=(server,), kwargs={'async': async})
-            thread.start()
-            threads.append(thread)
-        executions.append((execute, operations))
-    [ thread.join() for thread in threads ]
+    threads_to_join = []
     logs = []
-    # collect results
-    for execution, operations in executions:
-        # There is no log if an exception has been rised at the very end of the execution
-        if hasattr(execution, 'log'):
-            for operation in operations:
-                logger.info("Executed %s" % str(operation))
-                if operation.instance.pk:
-                    # Not all backends are called with objects saved on the database
-                    operation.store(execution.log)
-            stdout = execution.log.stdout.strip()
-            stdout and logger.debug('STDOUT %s', stdout)
-            stderr = execution.log.stderr.strip()
-            stderr and logger.debug('STDERR %s', stderr)
-            logs.append(execution.log)
+    for key, value in scripts.items():
+        route, __, async_action = key
+        backend, operations = value
+        args = (route.host,)
+        if async is None:
+            is_async = not serialize and (route.async or async_action)
         else:
-            mocked_log = BackendLog(state=BackendLog.EXCEPTION)
-            logs.append(mocked_log)
+            is_async = not serialize and (async or async_action)
+        kwargs = {
+            'async': is_async,
+        }
+        # we clone the connection just in case we are isolated inside a transaction
+        with db.clone(model=BackendLog) as handle:
+            log = backend.create_log(*args, using=handle.target)
+            log._state.db = handle.origin
+        kwargs['log'] = log
+        task = keep_log(backend.execute, log, operations)
+        logger.debug('%s is going to be executed on %s.' % (backend, route.host))
+        if serialize:
+            # Execute one backend at a time, no need for threads
+            task(*args, **kwargs)
+        else:
+            task = db.close_connection(task)
+            thread = threading.Thread(target=task, args=args, kwargs=kwargs)
+            thread.start()
+            if not is_async:
+                threads_to_join.append(thread)
+        logs.append(log)
+    [ thread.join() for thread in threads_to_join ]
     return logs
 
 
 def collect(instance, action, **kwargs):
     """ collect operations """
-    operations = kwargs.get('operations', set())
+    operations = kwargs.get('operations', OrderedSet())
     route_cache = kwargs.get('route_cache', {})
     for backend_cls in ServiceBackend.get_backends():
         # Check if there exists a related instance to be executed for this backend and action
@@ -147,8 +154,7 @@ def collect(instance, action, **kwargs):
             if backend_cls.is_main(instance):
                 instances = [(instance, action)]
             else:
-                candidate = backend_cls.get_related(instance)
-                if candidate:
+                for candidate in backend_cls.get_related(instance):
                     if candidate.__class__.__name__ == 'ManyRelatedManager':
                         if 'pk_set' in kwargs:
                             # m2m_changed signal
@@ -177,7 +183,7 @@ def collect(instance, action, **kwargs):
                 if update_fields is not None:
                     # TODO remove this, django does not execute post_save if update_fields=[]...
                     # Maybe open a ticket at Djangoproject ?
-                    # "update_fileds=[]" is a convention for explicitly executing backend
+                    # INITIAL INTENTION: "update_fields=[]" is a convention for explicitly executing backend
                     # i.e. account.disable()
                     if update_fields != []:
                         execute = False
@@ -188,10 +194,11 @@ def collect(instance, action, **kwargs):
                         if not execute:
                             continue
             operation = Operation(backend_cls, selected, iaction)
-            # Only schedule operations if the router gives servers to execute into
-            servers = router.get_servers(operation, cache=route_cache)
-            if servers:
-                operation.servers = servers
+            # Only schedule operations if the router has execution routes
+            routes = router.objects.get_for_operation(operation, cache=route_cache)
+            if routes:
+                logger.debug("Operation %s collected for execution" % operation)
+                operation.routes = routes
                 if iaction != Operation.DELETE:
                     # usually we expect to be using last object state,
                     # except when we are deleting it

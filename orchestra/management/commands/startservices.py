@@ -2,7 +2,7 @@ from optparse import make_option
 
 from django.core.management.base import BaseCommand
 
-from orchestra.settings import ORCHESTRA_START_SERVICES
+from orchestra import settings
 from orchestra.utils.sys import run, check_root
 
 
@@ -11,21 +11,20 @@ def run_tuple(services, action, options, optional=False):
         services = [services]
     for service in services:
         if options.get(service):
-            error_codes = [0,1] if optional else [0]
-            e = run('service %s %s' % (service, action), error_codes=error_codes)
-            if e.return_code == 1:
+            valid_codes = (0,1) if optional else (0,)
+            e = run('service %s %s' % (service, action), valid_codes=valid_codes, display=True)
+            if e.exit_code == 1:
                 return False
     return True
 
 
 def flatten(nested, depth=0):
-    if hasattr(nested, '__iter__'):
+    if isinstance(nested, (list, tuple)):
         for sublist in nested:
             for element in flatten(sublist, depth+1):
                 yield element
     else:
         yield nested
-
 
 
 class ManageServiceCommand(BaseCommand):
@@ -53,7 +52,7 @@ class ManageServiceCommand(BaseCommand):
 
 
 class Command(ManageServiceCommand):
-    services = ORCHESTRA_START_SERVICES
+    services = settings.ORCHESTRA_START_SERVICES
     action = 'start'
     option_list = BaseCommand.option_list
     help = 'Start all related services. Usefull for reload configuration and files.'

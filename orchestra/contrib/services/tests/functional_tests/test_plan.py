@@ -1,13 +1,12 @@
 from django.contrib.contenttypes.models import ContentType
 
 from orchestra.contrib.plans.models import Plan, ContractedPlan
+from orchestra.utils.tests import BaseTestCase
 
 from ...models import Service
 
-from . import BaseBillingTest
 
-
-class PlanBillingTest(BaseBillingTest):
+class PlanBillingTest(BaseTestCase):
     def create_plan_service(self):
         service = Service.objects.create(
             description="Association membership fee",
@@ -18,7 +17,7 @@ class PlanBillingTest(BaseBillingTest):
             is_fee=True,
             metric='',
             pricing_period=Service.BILLING_PERIOD,
-            rate_algorithm='STEP_PRICE',
+            rate_algorithm='orchestra.contrib.plans.ratings.step_price',
             on_cancel=Service.DISCOUNT,
             payment_style=Service.PREPAY,
             tax=0,

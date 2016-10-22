@@ -3,6 +3,7 @@ import collections
 import random
 import string
 from io import StringIO
+from itertools import tee
 
 
 def import_class(cls):
@@ -14,6 +15,11 @@ def import_class(cls):
 
 def random_ascii(length):
     return ''.join([random.SystemRandom().choice(string.hexdigits) for i in range(0, length)]).lower()
+
+
+def format_exception(exception):
+    name = type(exception).__name__
+    return ': '.join((name, str(exception)))
 
 
 class OrderedSet(collections.MutableSet):
@@ -78,6 +84,9 @@ class AttrDict(dict):
     def __init__(self, *args, **kwargs):
         super(AttrDict, self).__init__(*args, **kwargs)
         self.__dict__ = self
+    
+    def __hash__(self):
+        return hash(id(self))
 
 
 class CaptureStdout(list):
@@ -91,22 +100,8 @@ class CaptureStdout(list):
         sys.stdout = self._stdout
 
 
-def cmp_to_key(mycmp):
-    'Convert a cmp= function into a key= function'
-    class K(object):
-        def __init__(self, obj, *args):
-            self.obj = obj
-        def __lt__(self, other):
-            return mycmp(self.obj, other.obj) < 0
-        def __gt__(self, other):
-            return mycmp(self.obj, other.obj) > 0
-        def __eq__(self, other):
-            return mycmp(self.obj, other.obj) == 0
-        def __le__(self, other):
-            return mycmp(self.obj, other.obj) <= 0  
-        def __ge__(self, other):
-            return mycmp(self.obj, other.obj) >= 0
-        def __ne__(self, other):
-            return mycmp(self.obj, other.obj) != 0
-    return K
-
+def pairwise(iterable):
+    "s -> (s0,s1), (s1,s2), (s2, s3), ..."
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)

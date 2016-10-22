@@ -27,9 +27,10 @@
         <span class="name">{{ seller.get_name }}</span>
     </div>
     <div class="contact">
-        <p>{{ seller.address }}<br>
-        {{ seller.zipcode }} - {{ seller.city }}<br>
-        {{ seller.country }}<br>
+        <p>{{ seller.vat }}<br>
+        {{ seller.address }}<br>
+        {{ seller.zipcode }} - {% trans seller.city %}<br>
+        {% trans seller.get_country_display %}<br>
         </p>
         <p><a href="tel:93-803-21-32">{{ seller_info.phone }}</a><br>
         <a href="mailto:sales@pangea.org">{{ seller_info.email }}</a><br>
@@ -40,64 +41,79 @@
 
 {% block summary %}
 <div id="bill-number">
-        {{ bill.get_type_display.capitalize }}<br>
+        {% filter title %}{% trans bill.get_type_display %}{% endfilter %}<br>
         <span class="value">{{ bill.number }}</span><br>
 </div>
 <div id="bill-summary">
     <hr>
     <div id="due-date">
-        <span class="title">DUE DATE</span><br>
-        <psan class="value">{{ bill.due_on | default:default_due_date | date }}</span>
+        <span class="title">{% trans "DUE DATE" %}</span><br>
+        <psan class="value">{{ bill.due_on | default:default_due_date | date | capfirst }}</span>
     </div>
     <div id="total">
-        <span class="title">TOTAL</span><br>
-        <psan class="value">{{ bill.get_total }} &{{ currency.lower }};</span>
+        <span class="title">{% trans "TOTAL" %}</span><br>
+        <psan class="value">{{ bill.compute_total }} &{{ currency.lower }};</span>
     </div>
     <div id="bill-date">
-        <span class="title">{{ bill.get_type_display.upper }} DATE</span><br>
-        <psan class="value">{{ bill.closed_on | default:now | date }}</span>
+        <span class="title">{% blocktrans with bill_type=bill.get_type_display.upper %}{{ bill_type }} DATE{% endblocktrans %}</span><br>
+        <psan class="value">{{ bill.closed_on | default:now | date | capfirst }}</span>
     </div>
 </div>
 <div id="buyer-details">
     <span class="name">{{ buyer.get_name }}</span><br>
     {{ buyer.vat }}<br>
     {{ buyer.address }}<br>
-    {{ buyer.zipcode }} - {{ buyer.city }}<br>
-    {{ buyer.country }}<br>
+    {{ buyer.zipcode }} - {% trans buyer.city %}<br>
+    {% trans buyer.get_country_display %}<br>
 </div>
 {% endblock %}
 
 {% block content %}
+{% block lines %}
 <div id="lines">
     <span class="title column-id">id</span>
     <span class="title column-description">{% trans "description" %}</span>
+    <span class="title column-period">{% trans "period" %}</span>
     <span class="title column-quantity">{% trans "hrs/qty" %}</span>
     <span class="title column-rate">{% trans "rate/price" %}</span>
     <span class="title column-subtotal">{% trans "subtotal" %}</span>
     <br>
     {% for line in lines %}
-    {% with sublines=line.sublines.all %}
-    <span class="{% if not sublines %}last {% endif %}column-id">{{ line.id }}</span>
-    <span class="{% if not sublines %}last {% endif %}column-description">{{ line.description }}</span>
-    <span class="{% if not sublines %}last {% endif %}column-quantity">{{ line.get_verbose_quantity|default:"&nbsp;"|safe }}</span>
-    <span class="{% if not sublines %}last {% endif %}column-rate">{% if line.rate %}{{ line.rate }} &{{ currency.lower }};{% else %}&nbsp;{% endif %}</span>
-    <span class="{% if not sublines %}last {% endif %}column-subtotal">{{ line.subtotal }} &{{ currency.lower }};</span>
-    <br>
-        {% for subline in sublines %}
-            <span class="{% if forloop.last %}last {% endif %}subline column-id">&nbsp;</span>
-            <span class="{% if forloop.last %}last {% endif %}subline column-description">{{ subline.description }}</span>
-            <span class="{% if forloop.last %}last {% endif %}subline column-quantity">&nbsp;</span>
-            <span class="{% if forloop.last %}last {% endif %}subline column-rate">&nbsp;</span>
-            <span class="{% if forloop.last %}last {% endif %}subline column-subtotal">{{ subline.total }} &{{ currency.lower }};</span>
-            <br>
-        {% endfor %}
-    {% endwith %}
+        {% with sublines=line.sublines.all description=line.description|slice:"38:" %}
+        <span class="{% if not sublines and not description %}last {% endif %}column-id">{% if not line.order_id %}L{% endif %}{{ line.order_id|default:line.pk }}</span>
+        <span class="{% if not sublines and not description %}last {% endif %}column-description">{{ line.description|safe|slice:":38" }}</span>
+        <span class="{% if not sublines and not description %}last {% endif %}column-period">{{ line.get_verbose_period }}</span>
+        <span class="{% if not sublines and not description %}last {% endif %}column-quantity">{{ line.get_verbose_quantity|default:"&nbsp;"|safe }}</span>
+        <span class="{% if not sublines and not description %}last {% endif %}column-rate">{% if line.rate %}{{ line.rate }} &{{ currency.lower }};{% else %}&nbsp;{% endif %}</span>
+        <span class="{% if not sublines and not description %}last {% endif %}column-subtotal">{{ line.subtotal }} &{{ currency.lower }};</span>
+        <br>
+            {% if description %}
+                <span class="{% if not sublines %}last {% endif %}subline column-id">&nbsp;</span>
+                <span class="{% if not sublines %}last {% endif %}subline column-description">{{ description|safe|truncatechars:39 }}</span>
+                <span class="{% if not sublines %}last {% endif %}subline column-period">&nbsp;</span>
+                <span class="{% if not sublines %}last {% endif %}subline column-quantity">&nbsp;</span>
+                <span class="{% if not sublines %}last {% endif %}subline column-rate">&nbsp;</span>
+                <span class="{% if not sublines %}last {% endif %}subline column-subtotal">&nbsp;</span>
+            {% endif %}
+            {% for subline in sublines %}
+                <span class="{% if forloop.last %}last {% endif %}subline column-id">&nbsp;</span>
+                <span class="{% if forloop.last %}last {% endif %}subline column-description">{{ subline.description|safe|truncatechars:39 }}</span>
+                <span class="{% if forloop.last %}last {% endif %}subline column-period">&nbsp;</span>
+                <span class="{% if forloop.last %}last {% endif %}subline column-quantity">&nbsp;</span>
+                <span class="{% if forloop.last %}last {% endif %}subline column-rate">&nbsp;</span>
+                <span class="{% if forloop.last %}last {% endif %}subline column-subtotal">{{ subline.total }} &{{ currency.lower }};</span>
+                <br>
+            {% endfor %}
+        {% endwith %}
     {% endfor %}
 </div>
+{% endblock %}
+
+{% block totals %}
 <div id="totals">
     <br>&nbsp;<br>
-    {% for tax, subtotal in bill.get_subtotals.items %}
-        <span class="subtotal column-title">subtotal {{ tax }}% {% trans "VAT" %}</span>
+    {% for tax, subtotal in bill.compute_subtotals.items %}
+        <span class="subtotal column-title">{% trans "subtotal" %} {{ tax }}% {% trans "VAT" %}</span>
         <span class="subtotal column-value">{{ subtotal | first }} &{{ currency.lower }};</span>
         <br>
         <span class="tax column-title">{% trans "taxes" %} {{ tax }}% {% trans "VAT" %}</span>
@@ -105,9 +121,10 @@
         <br>
     {% endfor %}
     <span class="total column-title">{% trans "total" %}</span>
-    <span class="total column-value">{{ bill.get_total }} &{{ currency.lower }};</span>
+    <span class="total column-value">{{ bill.compute_total }} &{{ currency.lower }};</span>
     <br>
 </div>
+{% endblock %}
 {% endblock %}
 
 {% block footer %}
@@ -115,33 +132,39 @@
 <div class="footer">
     <div id="footer-column-1">
         <div id="comments">
+            {% block comments %}
             {% if bill.comments %}
             <span class="title">{% trans "COMMENTS" %}</span> {{ bill.comments|linebreaksbr }}
             {% endif %}
+            {% endblock %}
         </div>
     </div>
     <div id="footer-column-2">
+        {% block payment %}
         <div id="payment">
             <span class="title">{% trans "PAYMENT" %}</span>
                 {% if payment.message %}
-                    {{ payment.message | safe }}
+                    {{ payment.message|safe }}
                 {% else %}
                     {% blocktrans with type=bill.get_type_display.lower %}
-                    You can pay our {{ type }} by bank transfer. <br>
-                    Please make sure to state your name and the {{ bill.get_type_display.lower}} number.
+                    You can pay our <i>{{ type }}</i> by bank transfer.<br>
+                    Please make sure to state your name and the <i>{{ type }}</i> number.
                     Our bank account number is <br>
                     {% endblocktrans %}
                     <strong>{{ seller_info.bank_account }}</strong>
                 {% endif %}
         </div>
+        {% endblock %}
+        {% block questions %}
         <div id="questions">
             <span class="title">{% trans "QUESTIONS" %}</span>
-            {% blocktrans with type=bill.get_type_display.lower %}
-            If you have any question about your {{ type }}, please
-            feel free to contact us at your convinience. We will reply as soon as we get
+            {% blocktrans with type=bill.get_type_display.lower email=seller_info.email %}
+            If you have any question about your <i>{{ type }}</i>, please
+            feel free to write us at {{ email }}. We will reply as soon as we get
             your message.
             {% endblocktrans %}
         </div>
+        {% endblock %}
     </div>
 </div>
 </div>

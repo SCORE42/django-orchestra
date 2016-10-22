@@ -1,16 +1,18 @@
 import re
+from collections import defaultdict
+from functools import lru_cache
 
 from django.core.exceptions import ValidationError
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.plugins import Plugin
-from orchestra.utils.functional import cached
+from orchestra import plugins
 from orchestra.utils.python import import_class
 
 from . import settings
+from .utils import normurlpath
 
 
-class SiteDirective(Plugin):
+class SiteDirective(plugins.Plugin, metaclass=plugins.PluginMount):
     HTTPD = 'HTTPD'
     SEC = 'ModSecurity'
     SSL = 'SSL'
@@ -19,17 +21,21 @@ class SiteDirective(Plugin):
     help_text = ""
     unique_name = False
     unique_value = False
+    is_location = False
     
     @classmethod
-    @cached
-    def get_plugins(cls):
-        plugins = []
-        for cls in settings.WEBSITES_ENABLED_DIRECTIVES:
-            plugins.append(import_class(cls))
+    @lru_cache()
+    def get_plugins(cls, all=False):
+        if all:
+            plugins = super().get_plugins()
+        else:
+            plugins = []
+            for cls in settings.WEBSITES_ENABLED_DIRECTIVES:
+                plugins.append(import_class(cls))
         return plugins
     
     @classmethod
-    @cached
+    @lru_cache()
     def get_option_groups(cls):
         groups = {}
         for opt in cls.get_plugins():
@@ -42,7 +48,7 @@ class SiteDirective(Plugin):
     @classmethod
     def get_choices(cls):
         """ Generates grouped choices ready to use in Field.choices """
-        # generators can not be @cached
+        # generators can not be @lru_cache()
         yield (None, '-------')
         options = cls.get_option_groups()
         for option in options.pop(None, ()):
@@ -50,12 +56,48 @@ class SiteDirective(Plugin):
         for group, options in options.items():
             yield (group, [(op.name, op.verbose_name) for op in options])
     
-    def validate(self, website):
-        if self.regex and not re.match(self.regex, website.value):
+    def validate_uniqueness(self, directive, values, locations):
+        """ Validates uniqueness location, name and value """
+        errors = defaultdict(list)
+        value = directive.get('value', None)
+        # location uniqueness
+        location = None
+        if self.is_location and value is not None:
+            if not value and self.is_location:
+                value = '/'
+            location = normurlpath(value.split()[0])
+        if location is not None and location in locations:
+            errors['value'].append(ValidationError(
+                "Location '%s' already in use by other content/directive." % location
+            ))
+        else:
+            locations.add(location)
+        
+        # name uniqueness
+        if self.unique_name and self.name in values:
+            errors[None].append(ValidationError(
+                _("Only one %s can be defined.") % self.get_verbose_name()
+            ))
+        
+        # value uniqueness
+        if value is not None:
+            if self.unique_value and value in values.get(self.name, []):
+                errors['value'].append(ValidationError(
+                    _("This value is already used by other %s.") % force_text(self.get_verbose_name())
+                ))
+        values[self.name].append(value)
+        if errors:
+            raise ValidationError(errors)
+    
+    def validate(self, directive):
+        directive.value = directive.value.strip()
+        if not directive.value and self.is_location:
+            directive.value = '/'
+        if self.regex and not re.match(self.regex, directive.value):
             raise ValidationError({
                 'value': ValidationError(_("'%(value)s' does not match %(regex)s."),
                     params={
-                        'value': website.value,
+                        'value': directive.value,
                         'regex': self.regex
                     }),
             })
@@ -65,18 +107,25 @@ class Redirect(SiteDirective):
     name = 'redirect'
     verbose_name = _("Redirection")
     help_text = _("<tt>&lt;website path&gt; &lt;destination URL&gt;</tt>")
-    regex = r'^[^ ]+\s[^ ]+$'
+    regex = r'^[^ ]*\s[^ ]+$'
     group = SiteDirective.HTTPD
     unique_value = True
+    is_location = True
+    
+    def validate(self, directive):
+        """ inserts default url-path if not provided """
+        values = directive.value.strip().split()
+        if len(values) == 1:
+            values.insert(0, '/')
+        directive.value = ' '.join(values)
+        super(Redirect, self).validate(directive)
 
 
-class Proxy(SiteDirective):
+class Proxy(Redirect):
     name = 'proxy'
     verbose_name = _("Proxy")
     help_text = _("<tt>&lt;website path&gt; &lt;target URL&gt;</tt>")
     regex = r'^[^ ]+\shttp[^ ]+(timeout=[0-9]{1,3}|retry=[0-9]|\s)*$'
-    group = SiteDirective.HTTPD
-    unique_value = True
 
 
 class ErrorDocument(SiteDirective):
@@ -96,27 +145,21 @@ class SSLCA(SiteDirective):
     name = 'ssl-ca'
     verbose_name = _("SSL CA")
     help_text = _("Filesystem path of the CA certificate file.")
-    regex = r'^[^ ]+$'
+    regex = r'^/[^ ]+$'
     group = SiteDirective.SSL
     unique_name = True
 
 
-class SSLCert(SiteDirective):
+class SSLCert(SSLCA):
     name = 'ssl-cert'
     verbose_name = _("SSL cert")
     help_text = _("Filesystem path of the certificate file.")
-    regex = r'^[^ ]+$'
-    group = SiteDirective.SSL
-    unique_name = True
 
 
-class SSLKey(SiteDirective):
+class SSLKey(SSLCA):
     name = 'ssl-key'
     verbose_name = _("SSL key")
     help_text = _("Filesystem path of the key file.")
-    regex = r'^[^ ]+$'
-    group = SiteDirective.SSL
-    unique_name = True
 
 
 class SecRuleRemove(SiteDirective):
@@ -125,39 +168,40 @@ class SecRuleRemove(SiteDirective):
     help_text = _("Space separated ModSecurity rule IDs.")
     regex = r'^[0-9\s]+$'
     group = SiteDirective.SEC
+    is_location = True
 
 
-class SecEngine(SiteDirective):
+class SecEngine(SecRuleRemove):
     name = 'sec-engine'
     verbose_name = _("SecRuleEngine Off")
-    help_text = _("URL path with disabled modsecurity engine.")
+    help_text = _("URL-path with disabled modsecurity engine.")
     regex = r'^/[^ ]*$'
-    group = SiteDirective.SEC
-    unique_value = True
+    is_location = False
 
 
 class WordPressSaaS(SiteDirective):
     name = 'wordpress-saas'
     verbose_name = "WordPress SaaS"
-    help_text = _("URL path for mounting wordpress multisite.")
+    help_text = _("URL-path for mounting WordPress multisite.")
     group = SiteDirective.SAAS
     regex = r'^/[^ ]*$'
     unique_value = True
+    is_location = True
 
 
-class DokuWikiSaaS(SiteDirective):
+class DokuWikiSaaS(WordPressSaaS):
     name = 'dokuwiki-saas'
     verbose_name = "DokuWiki SaaS"
-    help_text = _("URL path for mounting wordpress multisite.")
-    group = SiteDirective.SAAS
-    regex = r'^/[^ ]*$'
-    unique_value = True
+    help_text = _("URL-path for mounting DokuWiki multisite.")
 
 
-class DrupalSaaS(SiteDirective):
+class DrupalSaaS(WordPressSaaS):
     name = 'drupal-saas'
     verbose_name = "Drupdal SaaS"
-    help_text = _("URL path for mounting wordpress multisite.")
-    group = SiteDirective.SAAS
-    regex = r'^/[^ ]*$'
-    unique_value = True
+    help_text = _("URL-path for mounting Drupal multisite.")
+
+
+class MoodleSaaS(WordPressSaaS):
+    name = 'moodle-saas'
+    verbose_name = "Moodle SaaS"
+    help_text = _("URL-path for mounting Moodle multisite.")

@@ -3,9 +3,10 @@ from django.contrib.auth import get_user_model
 from django.utils.html import strip_tags
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
+from django.templatetags.static import static
 from markdown import markdown
 
-from orchestra.forms.widgets import ReadOnlyWidget
+from orchestra.forms.widgets import SpanWidget
 
 from .models import Queue, Ticket
 
@@ -13,7 +14,7 @@ from .models import Queue, Ticket
 class MarkDownWidget(forms.Textarea):
     """ MarkDown textarea widget with syntax preview """
     
-    markdown_url = '/static/issues/markdown_syntax.html'
+    markdown_url = static('issues/markdown_syntax.html')
     markdown_help_text = (
         '<a href="%s" onclick=\'window.open("%s", "", "resizable=yes, '
         'location=no, width=300, height=640, menubar=no, status=no, scrollbars=yes"); '
@@ -40,7 +41,7 @@ class MessageInlineForm(forms.ModelForm):
     
     def __init__(self, *args, **kwargs):
         super(MessageInlineForm, self).__init__(*args, **kwargs)
-        self.fields['created_on'].widget = ReadOnlyWidget('')
+        self.fields['created_on'].widget = SpanWidget(display='')
         
     def clean_content(self):
         """ clean HTML tags """
@@ -98,7 +99,7 @@ class TicketForm(forms.ModelForm):
             description = description.replace('\n', '<br>')
             description = description.replace('#Ha9G9-?8', '>\n')
             description = '<div style="padding-left: 95px;">%s</div>' % description
-            widget = ReadOnlyWidget(description, description)
+            widget = SpanWidget(display=description)
             self.fields['display_description'].widget = widget
     
     def clean_description(self):

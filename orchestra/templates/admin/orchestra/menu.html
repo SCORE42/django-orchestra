@@ -1,23 +1,24 @@
-{% load i18n admin_tools_menu_tags %}
+{% load i18n admin_tools_menu_tags staticfiles %}
 {% if menu.children %}
-<script type="text/javascript" src="{{ media_url }}/admin_tools/js/utils.js"></script>
+
+<script type="text/javascript" src="{% static 'admin_tools/js/utils.js' %}"></script>
 <script type="text/javascript" charset="utf-8">
     // Load js files syncronously and conditionally
     var js_files = [
         {   
-            src : '{{ media_url }}/admin_tools/js/jquery/jquery.min.js',
+            src : '{% static "admin_tools/js/jquery/jquery.min.js" %}',
             test: function() { return typeof(jQuery) == 'undefined'; }
         },
         {   
-            src : '{{ media_url }}/admin_tools/js/json.min.js',
+            src : '{% static "admin_tools/js/json.min.js" %}',
             test: function() { return typeof(JSON.stringify) == 'undefined'; }
         },
         {   
-            src : '{{ media_url }}/admin_tools/js/menu.js',
+            src : '{% static "admin_tools/js/menu.js" %}',
             test: function() { return true; }
         }{% for js in menu.Media.js %},
         {   
-            src : '{{ media_url }}/{{ js }}',
+            src : '{% static js %}',
             test: function() { return true; }
         }{% endfor %}
     ];
@@ -45,13 +46,25 @@
 
 {% endif %}
 <ul id="navigation-menu">
-    <div style="max-width: 1170px; margin:auto;">
-    <div id="branding"><a href="/admin/"></a><h1 id="site-name"><a href="/admin/">Pangea Hosting Management <span class="version">0.0.1a1</span></a></h1></div>
+    <div style="max-width: 1370px; margin:auto; padding-top:4px;">
+    <div id="branding"><a href="/admin/"></a><h1 id="site-name"><a href="/admin/">{{ ORCHESTRA_SITE_VERBOSE_NAME }}<span class="version">0.0.1a1</span></a></h1></div>
     {% for item in menu.children %}{% admin_tools_render_menu_item item forloop.counter %}{% endfor %}
-    <span style="float:right;color:grey;padding:10px;font-size:11px;">{% trans 'Welcome' %},
-        {% url 'admin:accounts_account_change' user.pk as user_change_url %}
-        <a href="{{ user_change_url }}" style="color:#555;"><strong>{% filter force_escape %}{% firstof user.get_short_name user.username %}{% endfilter %}</strong></a>.
-     <a href="{% url 'admin:password_change' %}" style="color:#555;">Change password</a> / <a href="{% url 'admin:logout' %}" style="color:#555;">Log out</a></span>
+    <li class="menu-item" style="padding-left:15px;padding-top:3px;">
+        <div style="position:absolute">
+        <form action="{% url 'admin:orchestra_search_view' %}" method="get" name="top_search" >
+        <input type="text" id="searchbox"  name="q"
+                placeholder="Search" size="25" value="{{ query }}"
+                {% if search_autofocus or app_list %}autofocus="autofocus"{% endif %}
+                title="Use 'accountname!' for account direct access
+    Use 'service:word' for searching on specific services
+    Use 'fieldname=word' for searching on specific fields">
+        </form>
+        </div>
+    </li>
+        <span style="float:right;color:grey;margin:15px;font-size:13px;position:relative;white-space:nowrap;">
+            {% url 'admin:accounts_account_change' user.pk as user_change_url %}
+            <a href="{{ user_change_url }}" style="color:#555;"><strong>{% filter force_escape %}{% firstof user.get_short_name user.username %}{% endfilter %}</strong></a>
+         <a href="{% url 'admin:password_change' %}" style="color:#555;">Change password</a> / <a href="{% url 'admin:logout' %}" style="color:#555;">Log out</a></span>
     </div>
 </ul>
 {% endif %}

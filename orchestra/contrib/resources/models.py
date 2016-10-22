@@ -2,17 +2,14 @@ from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelatio
 from django.contrib.contenttypes.models import ContentType
 from django.apps import apps
 from django.db import models
-from django.db.models.loading import get_model
 from django.utils import timezone
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
-from djcelery.models import PeriodicTask, CrontabSchedule
+from djcelery.models import PeriodicTask
 
 from orchestra.core import validators
 from orchestra.models import queryset, fields
 from orchestra.models.utils import get_model_field_path
-from orchestra.utils.paths import get_project_dir
-from orchestra.utils.sys import run
 
 from . import tasks
 from .backends import ServiceMonitor
@@ -41,9 +38,9 @@ class Resource(models.Model):
     _related = set() # keeps track of related models for resource cleanup
     
     name = models.CharField(_("name"), max_length=32,
-            help_text=_("Required. 32 characters or fewer. Lowercase letters, "
-                        "digits and hyphen only."),
-            validators=[validators.validate_name])
+        help_text=_("Required. 32 characters or fewer. Lowercase letters, "
+                    "digits and hyphen only."),
+        validators=[validators.validate_name])
     verbose_name = models.CharField(_("verbose name"), max_length=256)
     content_type = models.ForeignKey(ContentType,
         help_text=_("Model where this resource will be hooked."))
@@ -63,10 +60,10 @@ class Resource(models.Model):
     scale = models.CharField(_("scale"), max_length=32, validators=[validate_scale],
         help_text=_("Scale in which this resource monitoring resoults should "
                     "be prorcessed to match with unit. e.g. <tt>10**9</tt>"))
-    disable_trigger = models.BooleanField(_("disable trigger"), default=False,
+    disable_trigger = models.BooleanField(_("disable trigger"), default=True,
         help_text=_("Disables monitors exeeded and recovery triggers"))
-    crontab = models.ForeignKey(CrontabSchedule, verbose_name=_("crontab"),
-        null=True, blank=True,
+    crontab = models.ForeignKey('djcelery.CrontabSchedule', verbose_name=_("crontab"),
+        null=True, blank=True, on_delete=models.SET_NULL,
         help_text=_("Crontab for periodic execution. "
                     "Leave it empty to disable periodic monitoring"))
     monitors = fields.MultiSelectField(_("monitors"), max_length=256, blank=True,
@@ -83,7 +80,7 @@ class Resource(models.Model):
         )
     
     def __str__(self):
-        return "{}-{}".format(str(self.content_type), self.name)
+        return "%s-%s" % (self.content_type, self.name)
     
     @cached_property
     def aggregation_class(self):
@@ -106,7 +103,7 @@ class Resource(models.Model):
             try:
                 self.get_model_path(monitor)
             except (RuntimeError, LookupError):
-                model = get_model(ServiceMonitor.get_backend(monitor).model)
+                model = apps.get_model(ServiceMonitor.get_backend(monitor).model)
                 monitor_errors.append(model._meta.model_name)
         if monitor_errors:
             model_name = self.content_type.model_class()._meta.model_name
@@ -119,26 +116,16 @@ class Resource(models.Model):
                 ]})
     
     def save(self, *args, **kwargs):
-        created = not self.pk
         super(Resource, self).save(*args, **kwargs)
-        self.sync_periodic_task()
-        # This only work on tests (multiprocessing used on real deployments)
+        # This only works on tests (multiprocessing used on real deployments)
         apps.get_app_config('resources').reload_relations()
-        run('sleep 2 && touch %s/wsgi.py' % get_project_dir(), async=True)
     
-    def delete(self, *args, **kwargs):
-        super(Resource, self).delete(*args, **kwargs)
-        name = 'monitor.%s' % str(self)
-    
-    def get_model_path(self, monitor):
-        """ returns a model path between self.content_type and monitor.model """
-        resource_model = self.content_type.model_class()
-        monitor_model = ServiceMonitor.get_backend(monitor).model_class()
-        return get_model_field_path(monitor_model, resource_model)
-    
-    def sync_periodic_task(self):
-        name = 'monitor.%s' % str(self)
-        if self.pk and self.crontab:
+    def sync_periodic_task(self, delete=False):
+        """ sync periodic task on save/delete resource operations """
+        name = 'monitor.%s' % self
+        if delete or not self.crontab or not self.is_active:
+            PeriodicTask.objects.filter(name=name).delete()
+        elif self.pk:
             try:
                 task = PeriodicTask.objects.get(name=name)
             except PeriodicTask.DoesNotExist:
@@ -153,10 +140,12 @@ class Resource(models.Model):
                 if task.crontab != self.crontab:
                     task.crontab = self.crontab
                     task.save(update_fields=['crontab'])
-        else:
-            PeriodicTask.objects.filter(
-                name=name,
-            ).delete()
+    
+    def get_model_path(self, monitor):
+        """ returns a model path between self.content_type and monitor.model """
+        resource_model = self.content_type.model_class()
+        monitor_model = ServiceMonitor.get_backend(monitor).model_class()
+        return get_model_field_path(monitor_model, resource_model)
     
     def get_scale(self):
         return eval(self.scale)
@@ -166,8 +155,25 @@ class Resource(models.Model):
     
     def monitor(self, async=True):
         if async:
-            return tasks.monitor.delay(self.pk, async=async)
-        return tasks.monitor(self.pk, async=async)
+            return tasks.monitor.apply_async(self.pk)
+        return tasks.monitor(self.pk)
+
+
+class ResourceDataQuerySet(models.QuerySet):
+    def get_or_create(self, obj, resource):
+        ct = ContentType.objects.get_for_model(type(obj))
+        try:
+            return self.get(
+                content_type=ct,
+                object_id=obj.pk,
+                resource=resource
+            ), False
+        except self.model.DoesNotExist:
+            return self.create(
+                content_object=obj,
+                resource=resource,
+                allocated=resource.default_allocation
+            ), True
 
 
 class ResourceData(models.Model):
@@ -178,43 +184,37 @@ class ResourceData(models.Model):
     used = models.DecimalField(_("used"), max_digits=16, decimal_places=3, null=True,
         editable=False)
     updated_at = models.DateTimeField(_("updated"), null=True, editable=False)
-    allocated = models.DecimalField(_("allocated"), max_digits=8, decimal_places=2,
-        null=True, blank=True)
+    allocated = models.PositiveIntegerField(_("allocated"), null=True, blank=True)
+    content_object_repr = models.CharField(_("content object representation"), max_length=256,
+        editable=False)
     
     content_object = GenericForeignKey()
+    objects = ResourceDataQuerySet.as_manager()
     
     class Meta:
         unique_together = ('resource', 'content_type', 'object_id')
         verbose_name_plural = _("resource data")
+        index_together = (
+            ('content_type', 'object_id'),
+        )
     
     def __str__(self):
-        return "%s: %s" % (str(self.resource), str(self.content_object))
-    
-    @classmethod
-    def get_or_create(cls, obj, resource):
-        ct = ContentType.objects.get_for_model(type(obj))
-        try:
-            return cls.objects.get(
-                content_type=ct,
-                object_id=obj.pk,
-                resource=resource
-            ), False
-        except cls.DoesNotExist:
-            return cls.objects.create(
-                content_object=obj,
-                resource=resource,
-                allocated=resource.default_allocation
-            ), True
+        return "%s: %s" % (self.resource, self.content_object)
     
     @property
     def unit(self):
         return self.resource.unit
     
+    @property
+    def verbose_name(self):
+        return self.resource.verbose_name
+    
     def get_used(self):
         resource = self.resource
         total = 0
         has_result = False
-        for dataset in self.get_monitor_datasets():
+        for monitor, dataset in self.get_monitor_datasets():
+            dataset = resource.aggregation_instance.filter(dataset)
             usage = resource.aggregation_instance.compute_usage(dataset)
             if usage is not None:
                 has_result = True
@@ -226,24 +226,24 @@ class ResourceData(models.Model):
             current = self.get_used()
         self.used = current or 0
         self.updated_at = timezone.now()
-        self.save(update_fields=['used', 'updated_at'])
+        self.content_object_repr = str(self.content_object)
+        self.save(update_fields=('used', 'updated_at', 'content_object_repr'))
     
     def monitor(self, async=False):
         ids = (self.object_id,)
         if async:
-            return tasks.monitor.delay(self.resource_id, ids=ids, async=async)
-        return tasks.monitor(self.resource_id, ids=ids, async=async)
+            return tasks.monitor.delay(self.resource_id, ids=ids)
+        return tasks.monitor(self.resource_id, ids=ids)
     
     def get_monitor_datasets(self):
         resource = self.resource
-        datasets = []
         for monitor in resource.monitors:
             path = resource.get_model_path(monitor)
             if path == []:
                 dataset = MonitorData.objects.filter(
                     monitor=monitor,
                     content_type=self.content_type_id,
-                    object_id=self.object_id
+                    object_id=self.object_id,
                 )
             else:
                 fields = '__'.join(path)
@@ -254,12 +254,9 @@ class ResourceData(models.Model):
                 dataset = MonitorData.objects.filter(
                     monitor=monitor,
                     content_type=ct,
-                    object_id__in=pks
+                    object_id__in=pks,
                 )
-            datasets.append(
-                resource.aggregation_instance.filter(dataset)
-            )
-        return datasets
+            yield monitor, dataset
 
 
 class MonitorDataQuerySet(models.QuerySet):
@@ -268,12 +265,16 @@ class MonitorDataQuerySet(models.QuerySet):
 
 class MonitorData(models.Model):
     """ Stores monitored data """
-    monitor = models.CharField(_("monitor"), max_length=256,
-            choices=ServiceMonitor.get_choices())
+    monitor = models.CharField(_("monitor"), max_length=256, db_index=True,
+        choices=ServiceMonitor.get_choices())
     content_type = models.ForeignKey(ContentType, verbose_name=_("content type"))
     object_id = models.PositiveIntegerField(_("object id"))
-    created_at = models.DateTimeField(_("created"), default=timezone.now)
+    created_at = models.DateTimeField(_("created"), default=timezone.now, db_index=True)
     value = models.DecimalField(_("value"), max_digits=16, decimal_places=2)
+    state = models.DecimalField(_("state"), max_digits=16, decimal_places=2, null=True,
+        help_text=_("Optional field used to store current state needed for diff-based monitoring."))
+    content_object_repr = models.CharField(_("content object representation"), max_length=256,
+        editable=False)
     
     content_object = GenericForeignKey()
     objects = MonitorDataQuerySet.as_manager()
@@ -281,6 +282,9 @@ class MonitorData(models.Model):
     class Meta:
         get_latest_by = 'id'
         verbose_name_plural = _("monitor data")
+        index_together = (
+            ('content_type', 'object_id'),
+        )
     
     def __str__(self):
         return str(self.monitor)
@@ -295,6 +299,8 @@ def create_resource_relation():
         """ account.resources.web """
         def __getattr__(self, attr):
             """ get or build ResourceData """
+            if attr.startswith('_'):
+                raise AttributeError
             try:
                 return self.obj.__resource_cache[attr]
             except AttributeError:
@@ -302,7 +308,7 @@ def create_resource_relation():
             except KeyError:
                 pass
             try:
-                data = self.obj.resource_set.get(resource__name=attr)
+                rdata = self.obj.resource_set.get(resource__name=attr)
             except ResourceData.DoesNotExist:
                 model = self.obj._meta.model_name
                 resource = Resource.objects.get(
@@ -310,18 +316,22 @@ def create_resource_relation():
                     name=attr,
                     is_active=True
                 )
-                data = ResourceData(
+                rdata = ResourceData(
                     content_object=self.obj,
+                    content_object_repr=str(self.obj),
                     resource=resource,
                     allocated=resource.default_allocation
                 )
-            self.obj.__resource_cache[attr] = data
-            return data
+            self.obj.__resource_cache[attr] = rdata
+            return rdata
         
         def __get__(self, obj, cls):
             """ proxy handled object """
             self.obj = obj
             return self
+        
+        def __iter__(self):
+            return iter(self.obj.resource_set.all())
     
     # Clean previous state
     for related in Resource._related:

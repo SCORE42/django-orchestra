@@ -6,28 +6,28 @@ from .models import Ticket, Message, Queue
 class QueueSerializer(serializers.HyperlinkedModelSerializer):
     class Meta:
         model = Queue
-        fields = ('url', 'name', 'default', 'notify')
+        fields = ('url', 'id', 'name', 'default', 'notify')
         read_only_fields = ('name', 'default', 'notify')
 
 
 class MessageSerializer(serializers.HyperlinkedModelSerializer):
     class Meta:
         model = Message
-        fields = ('id', 'author', 'author_name', 'content', 'created_on')
-        read_only_fields = ('author', 'author_name', 'created_on')
+        fields = ('id', 'author', 'author_name', 'content', 'created_at')
+        read_only_fields = ('author', 'author_name', 'created_at')
     
     def get_identity(self, data):
         return data.get('id')
     
-    def save_object(self, obj, **kwargs):
-        obj.author = self.context['request'].user
-        super(MessageSerializer, self).save_object(obj, **kwargs)
+    def create(self, validated_data):
+        validated_data['author'] = self.context['request'].user
+        return super(MessageSerializer, self).create(validated_data)
 
 
 class TicketSerializer(serializers.HyperlinkedModelSerializer):
     """ Validates if this zone generates a correct zone file """
-    messages = MessageSerializer(required=False, many=True)
-    is_read = serializers.SerializerMethodField('get_is_read')
+    messages = MessageSerializer(required=False, many=True, read_only=True)
+    is_read = serializers.SerializerMethodField()
     
     class Meta:
         model = Ticket
@@ -40,6 +40,6 @@ class TicketSerializer(serializers.HyperlinkedModelSerializer):
     def get_is_read(self, obj):
         return obj.is_read_by(self.context['request'].user)
     
-    def save_object(self, obj, **kwargs):
-        obj.creator = self.context['request'].user
-        super(TicketSerializer, self).save_object(obj, **kwargs)
+    def create(self, validated_data):
+        validated_data['creator'] = self.context['request'].user
+        return super(TicketSerializer, self).create(validated_data)

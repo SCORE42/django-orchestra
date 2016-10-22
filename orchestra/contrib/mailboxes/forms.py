@@ -1,56 +1,58 @@
 from django import forms
 from django.contrib.admin import widgets
+from django.core.exceptions import ValidationError
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.forms import UserCreationForm, UserChangeForm
 from orchestra.utils.python import AttrDict
 
-from .models import Address
+from . import settings
+from .models import Address, Mailbox
 
 
 class MailboxForm(forms.ModelForm):
     """ hacky form for adding reverse M2M form field for Mailbox.addresses """
     # TODO keep track of this ticket for future reimplementation
     #      https://code.djangoproject.com/ticket/897
-    addresses = forms.ModelMultipleChoiceField(queryset=Address.objects.select_related('domain'),
-        required=False,
+    addresses = forms.ModelMultipleChoiceField(required=False,
+        queryset=Address.objects.select_related('domain'),
         widget=widgets.FilteredSelectMultiple(verbose_name=_('addresses'), is_stacked=False))
     
     def __init__(self, *args, **kwargs):
         super(MailboxForm, self).__init__(*args, **kwargs)
         # Hack the widget in order to display add button
-        field = AttrDict(**{
-            'to': Address,
+        remote_field_mock = AttrDict(**{
+            'model': Address,
             'get_related_field': lambda: AttrDict(name='id'),
+            
         })
         widget = self.fields['addresses'].widget
-        self.fields['addresses'].widget = widgets.RelatedFieldWidgetWrapper(widget, field,
-                self.modeladmin.admin_site, can_add_related=True)
+        self.fields['addresses'].widget = widgets.RelatedFieldWidgetWrapper(
+            widget, remote_field_mock, self.modeladmin.admin_site, can_add_related=True)
         
+        account = self.modeladmin.account
         # Filter related addresses by account
         old_render = self.fields['addresses'].widget.render
         def render(*args, **kwargs):
             output = old_render(*args, **kwargs)
-            args = 'account=%i' % self.modeladmin.account.pk
+            args = 'account=%i&mailboxes=%s' % (account.pk, self.instance.pk)
             output = output.replace('/add/?', '/add/?%s&' % args)
             return mark_safe(output)
         self.fields['addresses'].widget.render = render
         queryset = self.fields['addresses'].queryset
-        self.fields['addresses'].queryset = queryset.filter(account=self.modeladmin.account.pk)
+        realted_addresses = queryset.filter(account_id=account.pk).order_by('name')
+        self.fields['addresses'].queryset = realted_addresses
         
         if self.instance and self.instance.pk:
             self.fields['addresses'].initial = self.instance.addresses.all()
     
-    def clean_custom_filtering(self):
-        # TODO move to model.clean?
-        filtering = self.cleaned_data['filtering']
-        custom_filtering = self.cleaned_data['custom_filtering']
-        if filtering == self._meta.model.CUSTOM and not custom_filtering:
-            raise forms.ValidationError({
-                'custom_filtering': _("You didn't provide any custom filtering.")
-            })
-        return custom_filtering
+    def clean_name(self):
+        name = self.cleaned_data['name']
+        max_length = settings.MAILBOXES_NAME_MAX_LENGTH
+        if len(name) > max_length:
+            raise ValidationError("Name length should be less than %i." % max_length)
+        return name
 
 
 class MailboxChangeForm(UserChangeForm, MailboxForm):
@@ -61,7 +63,7 @@ class MailboxCreationForm(UserCreationForm, MailboxForm):
     def clean_name(self):
         # Since model.clean() will check this, this is redundant,
         # but it sets a nicer error message than the ORM and avoids conflicts with contrib.auth
-        name = self.cleaned_data["name"]
+        name = super().clean_name()
         try:
             self._meta.model._default_manager.get(name=name)
         except self._meta.model.DoesNotExist:
@@ -72,5 +74,6 @@ class MailboxCreationForm(UserCreationForm, MailboxForm):
 class AddressForm(forms.ModelForm):
     def clean(self):
         cleaned_data = super(AddressForm, self).clean()
-        if not cleaned_data.get('mailboxes', True) and not cleaned_data['forward']:
-            raise forms.ValidationError(_("Mailboxes or forward address should be provided."))
+        forward = cleaned_data.get('forward', '')
+        if not cleaned_data.get('mailboxes', True) and not forward:
+            raise ValidationError(_("Mailboxes or forward address should be provided."))

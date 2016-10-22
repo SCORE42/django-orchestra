@@ -2,14 +2,11 @@ import os
 from collections import OrderedDict
 
 from django.db import models
-from django.db.models.signals import pre_save, pre_delete
-from django.dispatch import receiver
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 from jsonfield import JSONField
 
-from orchestra.core import validators, services
-from orchestra.utils.functional import cached
+from orchestra.core import validators
 
 from . import settings
 from .fields import VirtualDatabaseRelation, VirtualDatabaseUserRelation
@@ -54,30 +51,34 @@ class WebApp(models.Model):
     def clean(self):
         apptype = self.type_instance
         apptype.validate()
+        a = apptype.clean_data()
         self.data = apptype.clean_data()
     
-    @cached
-    def get_options(self, merge=False):
-        if merge:
-            options = OrderedDict()
-            qs = WebAppOption.objects.filter(webapp__account=self.account, webapp__type=self.type)
-            for name, value in qs.values_list('name', 'value').order_by('name'):
-                if name in options:
-                    options[name] = max(options[name], value)
+    def get_options(self, **kwargs):
+        options = OrderedDict()
+        qs = WebAppOption.objects.filter(**kwargs)
+        for name, value in qs.values_list('name', 'value').order_by('name'):
+            if name in options:
+                if AppOption.get(name).comma_separated:
+                    options[name] = options[name].rstrip(',') + ',' + value.lstrip(',')
                 else:
-                    options[name] = value
-            return options
-        return OrderedDict(self.options.values_list('name', 'value').order_by('name'))
+                    options[name] = max(options[name], value)
+            else:
+                options[name] = value
+        return options
     
     def get_directive(self):
         return self.type_instance.get_directive()
     
-    def get_path(self):
+    def get_base_path(self):
         context = {
             'home': self.get_user().get_home(),
             'app_name': self.name,
         }
-        path = settings.WEBAPPS_BASE_DIR % context
+        return settings.WEBAPPS_BASE_DIR % context
+    
+    def get_path(self):
+        path = self.get_base_path()
         public_root = self.options.filter(name='public-root').first()
         if public_root:
             path = os.path.join(path, public_root.value)
@@ -96,7 +97,8 @@ class WebApp(models.Model):
 class WebAppOption(models.Model):
     webapp = models.ForeignKey(WebApp, verbose_name=_("Web application"),
         related_name='options')
-    name = models.CharField(_("name"), max_length=128, choices=AppType.get_options_choices())
+    name = models.CharField(_("name"), max_length=128,
+        choices=AppType.get_group_options_choices())
     value = models.CharField(_("value"), max_length=256)
     
     class Meta:
@@ -118,23 +120,3 @@ class WebAppOption(models.Model):
     
     def clean(self):
         self.option_instance.validate()
-
-
-services.register(WebApp)
-
-
-# Admin bulk deletion doesn't call model.delete()
-# So, signals are used instead of model method overriding
-
-@receiver(pre_save, sender=WebApp, dispatch_uid='webapps.type.save')
-def type_save(sender, *args, **kwargs):
-    instance = kwargs['instance']
-    instance.type_instance.save()
-
-@receiver(pre_delete, sender=WebApp, dispatch_uid='webapps.type.delete')
-def type_delete(sender, *args, **kwargs):
-    instance = kwargs['instance']
-    try:
-        instance.type_instance.delete()
-    except KeyError:
-        pass

@@ -1,0 +1,26 @@
+{% extends "admin/systemusers/systemuser/create_link.html" %}
+{% load i18n l10n %}
+{% load admin_urls static utils %}
+
+{% block introduction %}
+Set permissions for {% for user in queryset %}{{ user.username }}{% if not forloop.last %}, {% endif %}{% endfor %} system user(s).
+{% endblock %}
+
+
+{% block prefields %}
+<div class="form-row ">
+    {{ form.set_action.errors }}
+    <label for="{{ form.set_action.id_for_label }}">{{ form.set_action.label }}:</label>
+    {{ form.set_action }}{% for x in ""|ljust:"50" %}&nbsp;{% endfor %}
+    <p class="help">{{ form.set_action.help_text|safe }}</p>
+</div>
+{% endblock %}
+
+{% block postfields %}
+<div class="form-row ">
+    {{ form.permissions.errors }}
+    <label for="{{ form.base_path.id_for_label }}">{{ form.permissions.label }}:</label>
+    {{ form.permissions }}{% for x in ""|ljust:"50" %}&nbsp;{% endfor %}
+    <p class="help">{{ form.permissions.help_text|safe }}</p>
+</div>
+{% endblock %}

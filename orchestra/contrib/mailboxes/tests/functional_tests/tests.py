@@ -41,7 +41,7 @@ class MailboxMixin(object):
         server = Server.objects.create(name=self.MASTER_SERVER)
         backend = backends.PasswdVirtualUserBackend.get_name()
         Route.objects.create(backend=backend, match=True, host=server)
-        backend = backends.PostfixAddressBackend.get_name()
+        backend = backends.PostfixAddressController.get_name()
         Route.objects.create(backend=backend, match=True, host=server)
     
     def add_quota_resource(self):
@@ -279,11 +279,6 @@ class RESTMailboxMixin(MailboxMixin):
     def delete_address(self, username):
         mailbox = self.rest.mailboxes.retrieve(name=username).get()
         self.rest.addresses.delete()
-    
-    @save_response_on_error
-    def change_password(self, username, password):
-        mailbox = self.rest.mailboxes.retrieve(name=username).get()
-        mailbox.set_password(password=password)
     
     @save_response_on_error
     def disable(self, username):

@@ -2,6 +2,7 @@ import calendar
 import datetime
 import decimal
 import math
+from functools import cmp_to_key
 
 from dateutil import relativedelta
 from django.contrib.contenttypes.models import ContentType
@@ -11,7 +12,7 @@ from django.utils.translation import ugettext, ugettext_lazy as _
 
 from orchestra import plugins
 from orchestra.utils.humanize import text2int
-from orchestra.utils.python import AttrDict, cmp_to_key
+from orchestra.utils.python import AttrDict, format_exception
 
 from . import settings, helpers
 
@@ -23,8 +24,9 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
     
     Relax and enjoy the journey.
     """
-    _VOLUME = 'VOLUME'
-    _COMPENSATION = 'COMPENSATION'
+    _PLAN = 'plan'
+    _COMPENSATION = 'compensation'
+    _PREPAY = 'prepay'
     
     model = None
     
@@ -42,29 +44,26 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
     def validate_content_type(self, service):
         pass
     
+    def validate_expression(self, service, method):
+        try:
+            obj = service.content_type.model_class().objects.all()[0]
+        except IndexError:
+            return
+        try:
+            bool(getattr(self, method)(obj))
+        except Exception as exc:
+            raise ValidationError(format_exception(exc))
+    
     def validate_match(self, service):
         if not service.match:
             service.match = 'True'
-        try:
-            obj = service.content_type.model_class().objects.all()[0]
-        except IndexError:
-            return
-        try:
-            bool(self.matches(obj))
-        except Exception as exception:
-            name = type(exception).__name__
-            raise ValidationError(': '.join((name, str(exception))))
+        self.validate_expression(service, 'matches')
     
     def validate_metric(self, service):
-        try:
-            obj = service.content_type.model_class().objects.all()[0]
-        except IndexError:
-            return
-        try:
-            bool(self.get_metric(obj))
-        except Exception as exception:
-            name = type(exception).__name__
-            raise ValidationError(': '.join((name, str(exception))))
+        self.validate_expression(service, 'get_metric')
+    
+    def validate_order_description(self, service):
+        self.validate_expression(service, 'get_order_description')
     
     def get_content_type(self):
         if not self.model:
@@ -72,15 +71,26 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
         app_label, model = self.model.split('.')
         return ContentType.objects.get_by_natural_key(app_label, model.lower())
     
+    def get_expression_context(self, instance):
+        return {
+            'instance': instance,
+            'obj': instance,
+            'ugettext': ugettext,
+            'handler': self,
+            'service': self.service,
+            instance._meta.model_name: instance,
+            'math': math,
+            'logsteps': lambda n, size=1: \
+                round(n/(decimal.Decimal(size*10**int(math.log10(max(n, 1))))))*size*10**int(math.log10(max(n, 1))),
+            'log10': math.log10,
+            'Decimal': decimal.Decimal,
+        }
+    
     def matches(self, instance):
         if not self.match:
             # Blank expressions always evaluate True
             return True
-        safe_locals = {
-            'instance': instance,
-            'obj': instance,
-            instance._meta.model_name: instance,
-        }
+        safe_locals = self.get_expression_context(instance)
         return eval(self.match, safe_locals)
     
     def get_ignore_delta(self):
@@ -113,27 +123,14 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
     
     def get_metric(self, instance):
         if self.metric:
-            safe_locals = {
-                instance._meta.model_name: instance,
-                'instance': instance,
-                'math': math,
-                'logsteps': lambda n, size=1: \
-                    round(n/(decimal.Decimal(size*10**int(math.log10(max(n, 1))))))*size*10**int(math.log10(max(n, 1))),
-                'log10': math.log10,
-                'Decimal': decimal.Decimal,
-            }
+            safe_locals = self.get_expression_context(instance)
             try:
                 return eval(self.metric, safe_locals)
-            except Exception as error:
-                raise type(error)("%s on '%s'" %(error, self.service))
+            except Exception as exc:
+                raise type(exc)("'%s' evaluating metric for '%s' service" % (exc, self.service))
     
     def get_order_description(self, instance):
-        safe_locals = {
-            'instance': instance,
-            'obj': instance,
-            'ugettext': ugettext,
-            instance._meta.model_name: instance,
-        }
+        safe_locals = self.get_expression_context(instance)
         account = getattr(instance, 'account', instance)
         with translation.override(account.language):
             if not self.order_description:
@@ -141,9 +138,9 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             return eval(self.order_description, safe_locals)
     
     def get_billing_point(self, order, bp=None, **options):
-        not_cachable = self.billing_point == self.FIXED_DATE and options.get('fixed_point')
-        if not_cachable or bp is None:
-            bp = options.get('billing_point', timezone.now().date())
+        cachable = bool(self.billing_point == self.FIXED_DATE and not options.get('fixed_point'))
+        if not cachable or bp is None:
+            bp = options.get('billing_point') or timezone.now().date()
             if not options.get('fixed_point'):
                 msg = ("Support for '%s' period and '%s' point is not implemented"
                     % (self.get_billing_period_display(), self.get_billing_point_display()))
@@ -194,7 +191,11 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
     
     def get_price_size(self, ini, end):
         rdelta = relativedelta.relativedelta(end, ini)
-        if self.billing_period == self.MONTHLY:
+        anual_prepay_of_monthly_pricing = bool(
+            self.billing_period == self.ANUAL and
+            self.payment_style == self.PREPAY and
+            self.get_pricing_period() == self.MONTHLY)
+        if self.billing_period == self.MONTHLY or anual_prepay_of_monthly_pricing:
             size = rdelta.years * 12
             size += rdelta.months
             days = calendar.monthrange(end.year, end.month)[1]
@@ -208,6 +209,7 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             size = 1
         else:
             raise NotImplementedError
+        size = round(size, 2)
         return decimal.Decimal(str(size))
     
     def get_pricing_slots(self, ini, end):
@@ -249,18 +251,18 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             'total': price,
         }))
     
-    def generate_line(self, order, price, *dates, **kwargs):
+    def generate_line(self, order, price, *dates, metric=1, discounts=None, computed=False):
+        """
+        discounts: extra discounts to apply
+        computed: price = price*size already performed
+        """
         if len(dates) == 2:
             ini, end = dates
         elif len(dates) == 1:
             ini, end = dates[0], dates[0]
         else:
-            raise AttributeError
-        metric = kwargs.pop('metric', 1)
-        discounts = kwargs.pop('discounts', ())
-        computed = kwargs.pop('computed', False)
-        if kwargs:
-            raise AttributeError
+            raise AttributeError("WTF is '%s'?" % dates)
+        discounts = discounts or ()
         
         size = self.get_price_size(ini, end)
         if not computed:
@@ -275,13 +277,18 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             'metric': metric,
             'discounts': [],
         })
-        discounted = 0
-        for dtype, dprice in discounts:
-            self.generate_discount(line, dtype, dprice)
-            discounted += dprice
-        subtotal += discounted
+        
         if subtotal > price:
-            self.generate_discount(line, self._VOLUME, price-subtotal)
+            plan_discount = price-subtotal
+            self.generate_discount(line, self._PLAN, plan_discount)
+            subtotal += plan_discount
+        for dtype, dprice in discounts:
+            subtotal += dprice
+            # Prevent compensations/prepays to refund money
+            if dtype in (self._COMPENSATION, self._PREPAY) and subtotal < 0:
+                dprice -= subtotal
+            if dprice:
+                self.generate_discount(line, dtype, dprice)
         return line
     
     def assign_compensations(self, givers, receivers, **options):
@@ -313,22 +320,25 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
         end = order.new_billed_until
         beyond = end
         cend = None
+        new_end = None
         for comp in getattr(order, '_compensations', []):
             intersect = comp.intersect(helpers.Interval(ini=ini, end=end))
             if intersect:
                 cini, cend = intersect.ini, intersect.end
                 if comp.end > beyond:
                     cend = comp.end
+                    new_end = cend
                     if only_beyond:
                         cini = beyond
-                elif not only_beyond:
+                elif only_beyond:
                     continue
                 dsize += self.get_price_size(cini, cend)
             # Extend billing point a little bit to benefit from a substantial discount
             elif comp.end > beyond and (comp.end-comp.ini).days > 3*(comp.ini-beyond).days:
                 cend = comp.end
+                new_end = cend
                 dsize += self.get_price_size(comp.ini, cend)
-        return dsize, cend
+        return dsize, new_end
     
     def get_register_or_renew_events(self, porders, ini, end):
         counter = 0
@@ -362,31 +372,36 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
                     if intersect:
                         csize += self.get_price_size(intersect.ini, intersect.end)
                 price = self.get_price(account, metric, position=position, rates=rates)
-                price = price * size
                 cprice = price * csize
+                price = price * size
                 if order in priced:
                     priced[order][0] += price
                     priced[order][1] += cprice
                 else:
-                    priced[order] = (price, cprice)
+                    priced[order] = [price, cprice]
         lines = []
         for order, prices in priced.items():
-            discounts = ()
-            # Generate lines and discounts from order.nominal_price
-            price, cprice = prices
-            # Compensations > new_billed_until
-            dsize, new_end = self.apply_compensations(order, only_beyond=True)
-            cprice += dsize*price
-            if cprice:
-                discounts = (
-                    (self._COMPENSATION, -cprice),
-                )
-                if new_end:
-                    size = self.get_price_size(order.new_billed_until, new_end)
-                    price += price*size
-                    order.new_billed_until = new_end
-            line = self.generate_line(order, price, ini, new_end or end, discounts=discounts, computed=True)
-            lines.append(line)
+            if hasattr(order, 'new_billed_until'):
+                discounts = ()
+                # Generate lines and discounts from order.nominal_price
+                price, cprice = prices
+                a = order.id
+                # Compensations > new_billed_until
+                dsize, new_end = self.apply_compensations(order, only_beyond=True)
+                cprice += dsize*price
+                if cprice:
+                    discounts = (
+                        (self._COMPENSATION, -cprice),
+                    )
+                    if new_end:
+                        size = self.get_price_size(order.new_billed_until, new_end)
+                        price += price*size
+                        order.new_billed_until = new_end
+                ini = order.billed_until or order.registered_on
+                end = new_end or order.new_billed_until
+                line = self.generate_line(
+                    order, price, ini, end, discounts=discounts, computed=True)
+                lines.append(line)
         return lines
     
     def bill_registered_or_renew_events(self, account, porders, rates):
@@ -436,6 +451,8 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
                         continue
                 cini = order.billed_until
             bp = self.get_billing_point(order, bp=bp, **options)
+            if order.billed_until and order.billed_until >= bp:
+                continue
             order.new_billed_until = bp
             ini = min(ini, cini)
             end = max(end, bp)
@@ -450,7 +467,6 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             givers = sorted(givers, key=cmp_to_key(helpers.cmp_billed_until_or_registered_on))
             orders = sorted(orders, key=cmp_to_key(helpers.cmp_billed_until_or_registered_on))
             self.assign_compensations(givers, orders, **options)
-        
         rates = self.get_rates(account)
         has_billing_period = self.billing_period != self.NEVER
         has_pricing_period = self.get_pricing_period() != self.NEVER
@@ -493,48 +509,110 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
         lines = []
         bp = None
         for order in orders:
+            prepay_discount = 0
             bp = self.get_billing_point(order, bp=bp, **options)
+            recharged_until = datetime.date.min
+            
             if (self.billing_period != self.NEVER and
                 self.get_pricing_period() == self.NEVER and
                 self.payment_style == self.PREPAY and order.billed_on):
                     # Recharge
                     if self.payment_style == self.PREPAY and order.billed_on:
+                        recharges = []
                         rini = order.billed_on
-                        charged = None
-                        new_metric, new_price = 0, 0
-                        for cini, cend, metric in order.get_metric(rini, bp, changes=True):
-                            if charged is None:
-                                charged = metric
+                        rend = min(bp, order.billed_until)
+                        bmetric = order.billed_metric
+                        if bmetric is None:
+                            bmetric = order.get_metric(order.billed_on)
+                        bsize = self.get_price_size(rini, order.billed_until)
+                        prepay_discount = self.get_price(account, bmetric) * bsize
+                        prepay_discount = round(prepay_discount, 2)
+                        for cini, cend, metric in order.get_metric(rini, rend, changes=True):
                             size = self.get_price_size(cini, cend)
-                            new_price += self.get_price(order, metric) * size
-                            new_metric += metric
-                        size = self.get_price_size(rini, bp)
-                        old_price = self.get_price(account, charged) * size
-                        if new_price > old_price:
-                            metric = new_metric - charged
-                            price = new_price - old_price
-                            lines.append(self.generate_line(order, price, rini, bp, metric=metric, computed=True))
+                            price = self.get_price(account, metric) * size
+                            discounts = ()
+                            discount = min(price, max(prepay_discount, 0))
+                            prepay_discount -= price
+                            if discount > 0:
+                                price -= discount
+                                discounts = (
+                                    (self._PREPAY, -discount),
+                                )
+                            # Don't overdload bills with lots of lines
+                            if price > 0:
+                                recharges.append((order, price, cini, cend, metric, discounts))
+                        if prepay_discount < 0:
+                            # User has prepaid less than the actual consumption
+                            for order, price, cini, cend, metric, discounts in recharges:
+                                if discounts:
+                                    price -= discounts[0][1]
+                                line = self.generate_line(order, price, cini, cend, metric=metric,
+                                    computed=True, discounts=discounts)
+                                lines.append(line)
+                            recharged_until = cend
             if order.billed_until and order.cancelled_on and order.cancelled_on >= order.billed_until:
+                # Cancelled order
                 continue
             if self.billing_period != self.NEVER:
                 ini = order.billed_until or order.registered_on
+#                ini = max(order.billed_until or order.registered_on, recharged_until)
                 # Periodic billing
                 if bp <= ini:
+                    # Already billed
                     continue
                 order.new_billed_until = bp
                 if self.get_pricing_period() == self.NEVER:
                     # Changes (Mailbox disk-like)
                     for cini, cend, metric in order.get_metric(ini, bp, changes=True):
+                        cini = max(recharged_until, cini)
                         price = self.get_price(account, metric)
-                        lines.append(self.generate_line(order, price, cini, cend, metric=metric))
+                        discounts = ()
+                        # Since the current datamodel can't guarantee to retrieve the exact
+                        # state for calculating prepay_discount (service price could have change)
+                        # maybe is it better not to discount anything.
+#                        discount = min(price, max(prepay_discount, 0))
+#                        if discount > 0:
+#                            price -= discount
+#                            prepay_discount -= discount
+#                            discounts = (
+#                                (self._PREPAY, -discount),
+#                            )
+                        if metric > 0:
+                            line = self.generate_line(order, price, cini, cend, metric=metric,
+                                discounts=discounts)
+                            lines.append(line)
                 elif self.get_pricing_period() == self.billing_period:
                     # pricing_slots (Traffic-like)
                     if self.payment_style == self.PREPAY:
-                        raise NotImplementedError
+                        raise NotImplementedError(
+                            "Metric with prepay and pricing_period == billing_period")
                     for cini, cend in self.get_pricing_slots(ini, bp):
                         metric = order.get_metric(cini, cend)
                         price = self.get_price(account, metric)
-                        lines.append(self.generate_line(order, price, cini, cend, metric=metric))
+                        discounts = ()
+#                        discount = min(price, max(prepay_discount, 0))
+#                        if discount > 0:
+#                            price -= discount
+#                            prepay_discount -= discount
+#                            discounts = (
+#                                (self._PREPAY, -discount),
+#                            )
+                        if metric > 0:
+                            line = self.generate_line(order, price, cini, cend, metric=metric,
+                                discounts=discounts)
+                            lines.append(line)
+                elif self.get_pricing_period() in (self.MONTHLY, self.ANUAL):
+                    if self.payment_style == self.PREPAY:
+                        # Traffic Prepay
+                        metric = order.get_metric(timezone.now().date())
+                        if metric > 0:
+                            price = self.get_price(account, metric)
+                            for cini, cend in self.get_pricing_slots(ini, bp):
+                                line = self.generate_line(order, price, cini, cend, metric=metric)
+                                lines.append(line)
+                    else:
+                        raise NotImplementedError(
+                            "Metric with postpay and pricing_period in (monthly, anual)")
                 else:
                     raise NotImplementedError
             else:
@@ -547,9 +625,12 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
                     # get metric (Job-like)
                     metric = order.get_metric(date)
                     price = self.get_price(account, metric)
-                    lines.append(self.generate_line(order, price, date, metric=metric))
+                    line = self.generate_line(order, price, date, metric=metric)
+                    lines.append(line)
                 else:
                     raise NotImplementedError
+            # Last processed metric for futrue recharges
+            order.new_billed_metric = metric
         return lines
     
     def generate_bill_lines(self, orders, account, **options):
@@ -564,6 +645,7 @@ class ServiceHandler(plugins.Plugin, metaclass=plugins.PluginMount):
             for line in lines:
                 order = line.order
                 order.billed_on = now
+                order.billed_metric = getattr(order, 'new_billed_metric', order.billed_metric)
                 order.billed_until = getattr(order, 'new_billed_until', order.billed_until)
-                order.save(update_fields=['billed_on', 'billed_until'])
+                order.save(update_fields=('billed_on', 'billed_until', 'billed_metric'))
         return lines

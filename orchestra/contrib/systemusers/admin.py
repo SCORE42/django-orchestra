@@ -2,10 +2,12 @@ from django.contrib import admin
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.admin import ExtendedModelAdmin, ChangePasswordAdminMixin
+from orchestra.admin.actions import disable, enable
+from orchestra.contrib.accounts.actions import list_accounts
 from orchestra.contrib.accounts.admin import SelectAccountAdminMixin
 from orchestra.contrib.accounts.filters import IsActiveListFilter
 
-from .actions import grant_permission, delete_selected
+from .actions import set_permission, create_link, delete_selected
 from .filters import IsMainListFilter
 from .forms import SystemUserCreationForm, SystemUserChangeForm
 from .models import SystemUser
@@ -40,8 +42,8 @@ class SystemUserAdmin(ChangePasswordAdminMixin, SelectAccountAdminMixin, Extende
     add_form = SystemUserCreationForm
     form = SystemUserChangeForm
     ordering = ('-id',)
-    actions = (delete_selected, grant_permission,)
-    change_view_actions = actions
+    change_view_actions = (set_permission, create_link)
+    actions = (disable, enable, delete_selected, list_accounts) + change_view_actions
     
     def display_main(self, user):
         return user.is_main

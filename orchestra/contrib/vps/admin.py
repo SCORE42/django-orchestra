@@ -1,26 +1,27 @@
-from django.conf.urls import patterns
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.admin import ExtendedModelAdmin
+from orchestra.admin import ExtendedModelAdmin, ChangePasswordAdminMixin
+from orchestra.contrib.accounts.actions import list_accounts
 from orchestra.contrib.accounts.admin import AccountAdminMixin
+from orchestra.contrib.accounts.filters import IsActiveListFilter
+from orchestra.forms import UserCreationForm, NonStoredUserChangeForm
 
-from .forms import VPSChangeForm, VPSCreationForm
 from .models import VPS
 
 
-class VPSAdmin(AccountAdminMixin, ExtendedModelAdmin):
-    list_display = ('hostname', 'type', 'template', 'account_link')
-    list_filter = ('type', 'template')
-    form = VPSChangeForm
-    add_form = VPSCreationForm
+class VPSAdmin(ChangePasswordAdminMixin, AccountAdminMixin, ExtendedModelAdmin):
+    list_display = ('hostname', 'type', 'template', 'display_active', 'account_link')
+    list_filter = ('type', IsActiveListFilter, 'template')
+    form = NonStoredUserChangeForm
+    add_form = UserCreationForm
     readonly_fields = ('account_link',)
-    change_readonly_fields = ('account', 'name', 'type', 'template')
+    search_fields = ('hostname', 'account__username', 'template')
+    change_readonly_fields = ('account', 'hostname', 'type', 'template')
     fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('account_link', 'hostname', 'type', 'template')
+            'fields': ('account_link', 'hostname', 'type', 'template', 'is_active')
         }),
         (_("Login"), {
             'classes': ('wide',),
@@ -37,13 +38,10 @@ class VPSAdmin(AccountAdminMixin, ExtendedModelAdmin):
             'fields': ('password1', 'password2',)
         }),
     )
+    actions = (list_accounts,)
     
-    def get_urls(self):
-        useradmin = UserAdmin(VPS, self.admin_site)
-        return patterns('',
-            (r'^(\d+)/password/$',
-             self.admin_site.admin_view(useradmin.user_change_password))
-        ) + super(VPSAdmin, self).get_urls()
+    def get_change_password_username(self, obj):
+        return 'root@%s' % obj.hostname
 
 
 admin.site.register(VPS, VPSAdmin)

@@ -1,14 +1,16 @@
 import datetime
 import decimal
+from functools import cmp_to_key
 
 from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 
 from orchestra.contrib.systemusers.models import SystemUser
+from orchestra.contrib.plans.models import Plan
 from orchestra.utils.tests import BaseTestCase
 
 from .. import helpers
-from ..models import Service, Plan
+from ..models import Service
 
 
 class Order(object):
@@ -16,7 +18,7 @@ class Order(object):
     last_id = 0
     
     def __init__(self, **kwargs):
-        self.registered_on = kwargs.get('registered_on', timezone.now().date())
+        self.registered_on = kwargs.get('registered_on') or timezone.now().date()
         self.billed_until = kwargs.get('billed_until', None)
         self.cancelled_on = kwargs.get('cancelled_on', None)
         type(self).last_id += 1
@@ -30,8 +32,8 @@ class HandlerTests(BaseTestCase):
         'orchestra.contrib.systemusers',
     )
     
-    def create_ftp_service(self):
-        service = Service.objects.create(
+    def create_ftp_service(self, **kwargs):
+        default = dict(
             description="FTP Account",
             content_type=ContentType.objects.get_for_model(SystemUser),
             match='not systemuser.is_main',
@@ -40,13 +42,21 @@ class HandlerTests(BaseTestCase):
             is_fee=False,
             metric='',
             pricing_period=Service.NEVER,
-            rate_algorithm='STEP_PRICE',
+            rate_algorithm='orchestra.contrib.plans.ratings.step_price',
             on_cancel=Service.DISCOUNT,
             payment_style=Service.PREPAY,
             tax=0,
-            nominal_price=10,
+            nominal_price=10
         )
+        default.update(kwargs)
+        service = Service.objects.create(**default)
         return service
+    
+    def validate_results(self, rates, results):
+        self.assertEqual(len(rates), len(results))
+        for rate, result in zip(rates, results):
+            self.assertEqual(rate['price'], result.price)
+            self.assertEqual(rate['quantity'], result.quantity)
     
     def test_get_chunks(self):
         service = self.create_ftp_service()
@@ -144,7 +154,7 @@ class HandlerTests(BaseTestCase):
         order6 = Order(
             registered_on=now+datetime.timedelta(days=8))
         orders = [order3, order, order1, order2, order4, order5, order6]
-        self.assertEqual(orders, sorted(orders, cmp=helpers.cmp_billed_until_or_registered_on))
+        self.assertEqual(orders, sorted(orders, key=cmp_to_key(helpers.cmp_billed_until_or_registered_on)))
     
     def test_compensation(self):
         now = timezone.now().date()
@@ -192,7 +202,7 @@ class HandlerTests(BaseTestCase):
             [now+datetime.timedelta(days=100), now+datetime.timedelta(days=102), order],
         ])
         porders = [order3, order, order1, order2, order4, order5, order6]
-        porders = sorted(porders, cmp=helpers.cmp_billed_until_or_registered_on)
+        porders = sorted(porders, key=cmp_to_key(helpers.cmp_billed_until_or_registered_on))
         compensations = []
         receivers = []
         for order in porders:
@@ -223,14 +233,21 @@ class HandlerTests(BaseTestCase):
         results = service.get_rates(account, cache=False)
         results = service.rate_method(results, 30)
         rates = [
-            {'price': decimal.Decimal('0.00'), 'quantity': 2},
-            {'price': decimal.Decimal('10.00'), 'quantity': 1},
-            {'price': decimal.Decimal('9.00'), 'quantity': 6},
-            {'price': decimal.Decimal('1.00'), 'quantity': 21}
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 2
+            }, {
+                'price': decimal.Decimal('10.00'),
+                'quantity': 1
+            }, {
+                'price': decimal.Decimal('9.00'),
+                'quantity': 6
+            }, {
+                'price': decimal.Decimal('1.00'),
+                'quantity': 21
+            }
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
         dupeplan = Plan.objects.create(
             name='DUPE', allow_multiple=True, is_combinable=True)
@@ -238,9 +255,7 @@ class HandlerTests(BaseTestCase):
         service.rates.create(plan=dupeplan, quantity=3, price=9)
         results = service.get_rates(account, cache=False)
         results = service.rate_method(results, 30)
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
         account.plans.create(plan=dupeplan)
         results = service.get_rates(account, cache=False)
@@ -250,9 +265,7 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('9.00'), 'quantity': 5},
             {'price': decimal.Decimal('1.00'), 'quantity': 21},
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
         hyperplan = Plan.objects.create(
             name='HYPER', allow_multiple=False, is_combinable=False)
@@ -265,9 +278,8 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('0.00'), 'quantity': 19},
             {'price': decimal.Decimal('5.00'), 'quantity': 11}
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
+        
         hyperplan.is_combinable = True
         hyperplan.save()
         results = service.get_rates(account, cache=False)
@@ -276,11 +288,9 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('0.00'), 'quantity': 23},
             {'price': decimal.Decimal('1.00'), 'quantity': 7}
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
-        service.rate_algorithm = service.MATCH_PRICE
+        service.rate_algorithm = 'orchestra.contrib.plans.ratings.match_price'
         service.save()
         results = service.get_rates(account, cache=False)
         results = service.rate_method(results, 30)
@@ -313,13 +323,18 @@ class HandlerTests(BaseTestCase):
         results = service.get_rates(account, cache=False)
         results = service.rate_method(results, 30)
         rates = [
-            {'price': decimal.Decimal('10.00'), 'quantity': 3},
-            {'price': decimal.Decimal('9.00'), 'quantity': 6},
-            {'price': decimal.Decimal('1.00'), 'quantity': 21}
+            {
+                'price': decimal.Decimal('10.00'),
+                'quantity': 3
+            }, {
+                'price': decimal.Decimal('9.00'),
+                'quantity': 6
+            }, {
+                'price': decimal.Decimal('1.00'),
+                'quantity': 21
+            }
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
     
     def test_zero_rates(self):
         service = self.create_ftp_service()
@@ -339,9 +354,7 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('9.00'), 'quantity': 6},
             {'price': decimal.Decimal('1.00'), 'quantity': 21}
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
     
     def test_rates_allow_multiple(self):
         service = self.create_ftp_service()
@@ -357,9 +370,7 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('0.00'), 'quantity': 2},
             {'price': decimal.Decimal('9.00'), 'quantity': 28},
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
         account.plans.create(plan=dupeplan)
         results = service.get_rates(account, cache=False)
@@ -368,9 +379,7 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('0.00'), 'quantity': 4},
             {'price': decimal.Decimal('9.00'), 'quantity': 26},
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
         
         account.plans.create(plan=dupeplan)
         results = service.get_rates(account, cache=False)
@@ -379,6 +388,150 @@ class HandlerTests(BaseTestCase):
             {'price': decimal.Decimal('0.00'), 'quantity': 6},
             {'price': decimal.Decimal('9.00'), 'quantity': 24},
         ]
-        for rate, result in zip(rates, results):
-            self.assertEqual(rate['price'], result.price)
-            self.assertEqual(rate['quantity'], result.quantity)
+        self.validate_results(rates, results)
+    
+    def test_best_price(self):
+        service = self.create_ftp_service(rate_algorithm='orchestra.contrib.plans.ratings.best_price')
+        account = self.create_account()
+        dupeplan = Plan.objects.create(name='DUPE')
+        account.plans.create(plan=dupeplan)
+        service.rates.create(plan=dupeplan, quantity=0, price=0)
+        service.rates.create(plan=dupeplan, quantity=2, price=9)
+        service.rates.create(plan=dupeplan, quantity=3, price=8)
+        service.rates.create(plan=dupeplan, quantity=4, price=7)
+        service.rates.create(plan=dupeplan, quantity=5, price=10)
+        service.rates.create(plan=dupeplan, quantity=10, price=5)
+        raw_rates = service.get_rates(account, cache=False)
+        results = service.rate_method(raw_rates, 2)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 1
+            },
+            {
+                'price': decimal.Decimal('9.00'),
+                'quantity': 1
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 3)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 1
+            },
+            {
+                'price': decimal.Decimal('8.00'),
+                'quantity': 2
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 5)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 1
+            },
+            {
+                'price': decimal.Decimal('7.00'),
+                'quantity': 4
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 9)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 1
+            },
+            {
+                'price': decimal.Decimal('7.00'),
+                'quantity': 4
+            },
+            {
+                'price': decimal.Decimal('10.00'),
+                'quantity': 4
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 10)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 1
+            },
+            {
+                'price': decimal.Decimal('5.00'),
+                'quantity': 9
+            },
+        ]
+        self.validate_results(rates, results)
+        
+    def test_best_price_multiple(self):
+        service = self.create_ftp_service(rate_algorithm='orchestra.contrib.plans.ratings.best_price')
+        account = self.create_account()
+        dupeplan = Plan.objects.create(name='DUPE')
+        account.plans.create(plan=dupeplan)
+        account.plans.create(plan=dupeplan)
+        service.rates.create(plan=dupeplan, quantity=0, price=0)
+        service.rates.create(plan=dupeplan, quantity=2, price=9)
+        service.rates.create(plan=dupeplan, quantity=3, price=8)
+        service.rates.create(plan=dupeplan, quantity=4, price=7)
+        service.rates.create(plan=dupeplan, quantity=5, price=10)
+        service.rates.create(plan=dupeplan, quantity=10, price=5)
+        raw_rates = service.get_rates(account, cache=False)
+        
+        results = service.rate_method(raw_rates, 3)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 2
+            },
+            {
+                'price': decimal.Decimal('8.00'),
+                'quantity': 1
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 10)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 2
+            },
+            {
+                'price': decimal.Decimal('5.00'),
+                'quantity': 8
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        account.plans.create(plan=dupeplan)
+        raw_rates = service.get_rates(account, cache=False)
+        
+        results = service.rate_method(raw_rates, 3)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 3
+            },
+        ]
+        self.validate_results(rates, results)
+        
+        results = service.rate_method(raw_rates, 10)
+        rates = [
+            {
+                'price': decimal.Decimal('0.00'),
+                'quantity': 3
+            },
+            {
+                'price': decimal.Decimal('5.00'),
+                'quantity': 7
+            },
+        ]
+        self.validate_results(rates, results)

@@ -5,26 +5,40 @@ import textwrap
 from django.template import Template, Context
 from django.utils.translation import ugettext_lazy as _
 
-from orchestra.contrib.orchestration import ServiceController, replace
+from orchestra.contrib.orchestration import ServiceController
 from orchestra.contrib.resources import ServiceMonitor
 
 from .. import settings
 from ..utils import normurlpath
 
 
-class Apache2Backend(ServiceController):
+class Apache2Controller(ServiceController):
+    """
+    Apache &ge;2.4 backend with support for the following directives:
+        <tt>static</tt>, <tt>location</tt>, <tt>fpm</tt>, <tt>fcgid</tt>, <tt>uwsgi</tt>, \
+        <tt>ssl</tt>, <tt>security</tt>, <tt>redirects</tt>, <tt>proxies</tt>, <tt>saas</tt>
+    """
     HTTP_PORT = 80
     HTTPS_PORT = 443
     
     model = 'websites.Website'
     related_models = (
         ('websites.Content', 'website'),
+        ('websites.WebsiteDirective', 'website'),
         ('webapps.WebApp', 'website_set'),
     )
     verbose_name = _("Apache 2")
+    doc_settings = (settings, (
+        'WEBSITES_VHOST_EXTRA_DIRECTIVES',
+        'WEBSITES_DEFAULT_SSL_CERT',
+        'WEBSITES_DEFAULT_SSL_KEY',
+        'WEBSITES_DEFAULT_SSL_CA',
+        'WEBSITES_BASE_APACHE_CONF',
+        'WEBSITES_DEFAULT_IPS',
+        'WEBSITES_SAAS_DIRECTIVES',
+    ))
     
-    def render_virtual_host(self, site, context, ssl=False):
-        context['port'] = self.HTTPS_PORT if ssl else self.HTTP_PORT
+    def get_extra_conf(self, site, context, ssl=False):
         extra_conf = self.get_content_directives(site, context)
         directives = site.get_directives()
         if ssl:
@@ -38,13 +52,21 @@ class Apache2Backend(ServiceController):
             extra_conf.append((location, directive % settings_context))
         # Order extra conf directives based on directives (longer first)
         extra_conf = sorted(extra_conf, key=lambda a: len(a[0]), reverse=True)
-        context['extra_conf'] = '\n'.join([conf for location, conf in extra_conf])
+        return '\n'.join([conf for location, conf in extra_conf])
+    
+    def render_virtual_host(self, site, context, ssl=False):
+        context.update({
+            'port': self.HTTPS_PORT if ssl else self.HTTP_PORT,
+            'vhost_set_fcgid': False,
+            'server_alias_lines': ' \\\n                '.join(context['server_alias'])
+        })
+        context['extra_conf'] = self.get_extra_conf(site, context, ssl)
         return Template(textwrap.dedent("""\
-            <VirtualHost {{ ip }}:{{ port }}>
+            <VirtualHost{% for ip in ips %} {{ ip }}:{{ port }}{% endfor %}>
                 IncludeOptional /etc/apache2/site[s]-override/{{ site_unique_name }}.con[f]
                 ServerName {{ server_name }}\
             {% if server_alias %}
-                ServerAlias {{ server_alias|join:' ' }}{% endif %}\
+                ServerAlias {{ server_alias_lines }}{% endif %}\
             {% if access_log %}
                 CustomLog {{ access_log }} common{% endif %}\
             {% if error_log %}
@@ -59,7 +81,7 @@ class Apache2Backend(ServiceController):
     def render_redirect_https(self, context):
         context['port'] = self.HTTP_PORT
         return Template(textwrap.dedent("""
-            <VirtualHost {{ ip }}:{{ port }}>
+            <VirtualHost{% for ip in ips %} {{ ip }}:{{ port }}{% endfor %}>
                 ServerName {{ server_name }}\
             {% if server_alias %}
                 ServerAlias {{ server_alias|join:' ' }}{% endif %}\
@@ -84,67 +106,97 @@ class Apache2Backend(ServiceController):
                 apache_conf += self.render_virtual_host(site, context, ssl=True)
             if site.protocol == site.HTTPS_ONLY:
                 apache_conf += self.render_redirect_https(context)
-            context['apache_conf'] = apache_conf.replace("'", '"')
-            self.append(textwrap.dedent("""\
-                apache_conf='%(apache_conf)s'
+            context['apache_conf'] = apache_conf.strip()
+            self.append(textwrap.dedent("""
+                # Generate Apache config for site %(site_name)s
+                read -r -d '' apache_conf << 'EOF' || true
+                %(apache_conf)s
+                EOF
                 {
                     echo -e "${apache_conf}" | diff -N -I'^\s*#' %(sites_available)s -
                 } || {
                     echo -e "${apache_conf}" > %(sites_available)s
-                    UPDATED=1
+                    UPDATED_APACHE=1
                 }""") % context
             )
         if context['server_name'] and site.active:
-            self.append(textwrap.dedent("""\
-                if [[ ! -f %(sites_enabled)s ]]; then
-                    a2ensite %(site_unique_name)s.conf
-                    UPDATED=1
-                fi""") % context
+            self.append(textwrap.dedent("""
+                # Enable site %(site_name)s
+                [[ $(a2ensite %(site_unique_name)s) =~ "already enabled" ]] || UPDATED_APACHE=1\
+                """) % context
             )
         else:
-            self.append(textwrap.dedent("""\
-                if [[ -f %(sites_enabled)s ]]; then
-                    a2dissite %(site_unique_name)s.conf;
-                    UPDATED=1
-                fi""") % context
+            self.append(textwrap.dedent("""
+                # Disable site %(site_name)s
+                [[ $(a2dissite %(site_unique_name)s) =~ "already disabled" ]] || UPDATED_APACHE=1\
+                """) % context
             )
     
     def delete(self, site):
         context = self.get_context(site)
-        self.append("a2dissite %(site_unique_name)s.conf && UPDATED=1" % context)
-        self.append("rm -f %(sites_available)s" % context)
+        self.append(textwrap.dedent("""
+            # Remove site configuration for %(site_name)s
+            [[ $(a2dissite %(site_unique_name)s) =~ "already disabled" ]] || UPDATED_APACHE=1
+            rm -f %(sites_available)s\
+            """) % context
+        )
     
     def prepare(self):
-        super(Apache2Backend, self).prepare()
+        super(Apache2Controller, self).prepare()
         # Coordinate apache restart with php backend in order not to overdo it
-        self.append('echo "Apache2Backend" >> /dev/shm/restart.apache2')
+        self.append(textwrap.dedent("""
+            BACKEND="Apache2Controller"
+            echo "$BACKEND" >> /dev/shm/reload.apache2
+            
+            function coordinate_apache_reload () {
+                # Coordinate Apache reload with other concurrent backends (e.g. PHPController)
+                is_last=0
+                counter=0
+                while ! mv /dev/shm/reload.apache2 /dev/shm/reload.apache2.locked; do
+                    if [[ $counter -gt 4 ]]; then
+                        echo "[ERROR]: Apache reload synchronization deadlocked!" >&2
+                        exit 10
+                    fi
+                    counter=$(($counter+1))
+                    sleep 0.1;
+                done
+                state="$(grep -v -E "^$BACKEND($|\s)" /dev/shm/reload.apache2.locked)" || is_last=1
+                [[ $is_last -eq 0 ]] && {
+                    echo "$state" | grep -v ' RELOAD$' || is_last=1
+                }
+                if [[ $is_last -eq 1 ]]; then
+                    echo "[DEBUG]: Last backend to run, update: $UPDATED_APACHE, state: '$state'"
+                    if [[ $UPDATED_APACHE -eq 1 || "$state" =~ .*RELOAD$ ]]; then
+                        if service apache2 status > /dev/null; then
+                            service apache2 reload
+                        else
+                            service apache2 start
+                        fi
+                    fi
+                    rm /dev/shm/reload.apache2.locked
+                else
+                    echo "$state" > /dev/shm/reload.apache2.locked
+                    if [[ $UPDATED_APACHE -eq 1 ]]; then
+                        echo -e "[DEBUG]: Apache will be reloaded by another backend:\\n${state}"
+                        echo "$BACKEND RELOAD" >> /dev/shm/reload.apache2.locked
+                    fi
+                    mv /dev/shm/reload.apache2.locked /dev/shm/reload.apache2
+                fi
+            }""")
+        )
     
     def commit(self):
         """ reload Apache2 if necessary """
-        self.append(textwrap.dedent("""\
-            locked=1
-            state="$(grep -v 'Apache2Backend' /dev/shm/restart.apache2)" || locked=0
-            echo -n "$state" > /dev/shm/restart.apache2
-            if [[ $UPDATED == 1 ]]; then
-                if [[ $locked == 0 ]]; then
-                    service apache2 reload
-                else
-                    echo "Apache2Backend RESTART" >> /dev/shm/restart.apache2
-                fi
-            elif [[ "$state" =~ .*RESTART$ ]]; then
-                rm /dev/shm/restart.apache2
-                service apache2 reload
-            fi""")
-        )
-        super(Apache2Backend, self).commit()
+        self.append("coordinate_apache_reload")
+        super(Apache2Controller, self).commit()
     
     def get_directives(self, directive, context):
         method, args = directive[0], directive[1:]
         try:
             method = getattr(self, 'get_%s_directives' % method)
         except AttributeError:
-            raise AttributeError("%s does not has suport for '%s' directive." %
-                    (self.__class__.__name__, method))
+            context = (self.__class__.__name__, method)
+            raise AttributeError("%s does not has suport for '%s' directive." % context)
         return method(context, *args)
     
     def get_content_directives(self, site, context):
@@ -175,6 +227,7 @@ class Apache2Backend(ServiceController):
             # UNIX socket
             target = 'unix:%(socket)s|fcgi://127.0.0.1%(app_path)s/'
             if context['location']:
+                # FIXME unix sockets do not support $1
                 target = 'unix:%(socket)s|fcgi://127.0.0.1%(app_path)s/$1'
         context.update({
             'app_path': os.path.normpath(app_path),
@@ -194,10 +247,11 @@ class Apache2Backend(ServiceController):
         directives = ''
         # This Action trick is used instead of FcgidWrapper because we don't want to define
         # a new fcgid process class each time an app is mounted (num proc limits enforcement).
-        if 'wrapper_dir' not in context:
+        if not context['vhost_set_fcgid']:
             # fcgi-bin only needs to be defined once per vhots
             # We assume that all account wrapper paths will share the same dir
             context['wrapper_dir'] = os.path.dirname(wrapper_path)
+            context['vhost_set_fcgid'] = True
             directives = textwrap.dedent("""\
                 Alias /fcgi-bin/ %(wrapper_dir)s/
                 <Location /fcgi-bin/>
@@ -235,27 +289,39 @@ class Apache2Backend(ServiceController):
             ca = [settings.WEBSITES_DEFAULT_SSL_CA]
             if not (cert and key):
                 return []
-        config = "SSLEngine on\n"
-        config += "SSLCertificateFile %s\n" % cert[0]
-        config += "SSLCertificateKeyFile %s\n" % key[0]
+        ssl_config = [
+            "SSLEngine on",
+            "SSLCertificateFile %s" % cert[0],
+            "SSLCertificateKeyFile %s" % key[0],
+        ]
         if ca:
-           config += "SSLCACertificateFile %s\n" % ca[0]
+           ssl_config.append("SSLCACertificateFile %s" % ca[0])
         return [
-            ('', config),
+            ('', '\n'.join(ssl_config)),
         ]
         
     def get_security(self, directives):
-        security = []
+        rules = []
+        location = '/'
         for values in directives.get('sec-rule-remove', []):
             for rule in values.split():
-                sec_rule = "SecRuleRemoveById %i" % int(rule)
-                security.append(('', sec_rule))
+                rules.append('SecRuleRemoveById %i' % int(rule))
         for location in directives.get('sec-engine', []):
-            sec_rule = textwrap.dedent("""\
-                <Location %s>
-                    SecRuleEngine off
-                </Location>""") % location
-            security.append((location, sec_rule))
+            if location == '/':
+                rules.append('SecRuleEngine Off')
+            else:
+                rules.append(textwrap.dedent("""\
+                    <Location %s>
+                        SecRuleEngine Off
+                    </Location>""") % location
+                )
+        security = []
+        if rules:
+            rules = textwrap.dedent("""\
+                <IfModule mod_security2.c>
+                    %s
+                </IfModule>""") % '\n    '.join(rules)
+            security.append((location, rules))
         return security
     
     def get_redirects(self, directives):
@@ -332,7 +398,7 @@ class Apache2Backend(ServiceController):
         context = {
             'site': site,
             'site_name': site.name,
-            'ip': settings.WEBSITES_DEFAULT_IP,
+            'ips': settings.WEBSITES_DEFAULT_IPS,
             'site_unique_name': site.unique_name,
             'user': self.get_username(site),
             'group': self.get_groupname(site),
@@ -344,7 +410,9 @@ class Apache2Backend(ServiceController):
             'error_log': site.get_www_error_log_path(),
             'banner': self.get_banner(),
         }
-        return replace(context, "'", '"')
+        if not context['ips']:
+            raise ValueError("WEBSITES_DEFAULT_IPS is empty.")
+        return context
     
     def set_content_context(self, content, context):
         content_context = {
@@ -353,18 +421,21 @@ class Apache2Backend(ServiceController):
             'app_name': content.webapp.name,
             'app_path': content.webapp.get_path(),
         }
-        content_context = replace(content_context, "'", '"')
         context.update(content_context)
 
 
 class Apache2Traffic(ServiceMonitor):
     """
     Parses apache logs,
-    looking for the size of each request on the last word of the log line
+    looking for the size of each request on the last word of the log line.
     """
     model = 'websites.Website'
     resource = ServiceMonitor.TRAFFIC
     verbose_name = _("Apache 2 Traffic")
+    monthly_sum_old_values = True
+    doc_settings = (settings,
+        ('WEBSITES_TRAFFIC_IGNORE_HOSTS',)
+    )
     
     def prepare(self):
         super(Apache2Traffic, self).prepare()
@@ -419,9 +490,8 @@ class Apache2Traffic(ServiceMonitor):
         self.append('monitor {object_id} "{last_date}" {log_file}'.format(**context))
     
     def get_context(self, site):
-        context = {
+        return {
             'log_file': '%s{,.1}' % site.get_www_access_log_path(),
             'last_date': self.get_last_date(site.pk).strftime("%Y-%m-%d %H:%M:%S %Z"),
             'object_id': site.pk,
         }
-        return replace(context, "'", '"')

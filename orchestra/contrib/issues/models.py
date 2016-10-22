@@ -1,12 +1,12 @@
 from django.conf import settings as djsettings
 from django.db import models
+from django.db.models import query, Q
 from django.utils.translation import ugettext_lazy as _
 
 from orchestra.contrib.contacts import settings as contacts_settings
 from orchestra.contrib.contacts.models import Contact
-from orchestra.core.translations import ModelTranslation
 from orchestra.models.fields import MultiSelectField
-from orchestra.utils import send_email_template
+from orchestra.utils.mail import send_email_template
 
 from . import settings
 
@@ -31,6 +31,12 @@ class Queue(models.Model):
         elif not existing_default:
             self.default = True
         super(Queue, self).save(*args, **kwargs)
+
+
+class TicketQuerySet(query.QuerySet):
+    def involved_by(self, user, *args, **kwargs):
+        qset = Q(creator=user) | Q(owner=user) | Q(messages__author=user)
+        return self.filter(qset, *args, **kwargs).distinct()
 
 
 class Ticket(models.Model):
@@ -59,20 +65,22 @@ class Ticket(models.Model):
     )
     
     creator = models.ForeignKey(djsettings.AUTH_USER_MODEL, verbose_name=_("created by"),
-        related_name='tickets_created', null=True)
+        related_name='tickets_created', null=True, on_delete=models.SET_NULL)
     creator_name = models.CharField(_("creator name"), max_length=256, blank=True)
     owner = models.ForeignKey(djsettings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL,
         related_name='tickets_owned', verbose_name=_("assigned to"))
-    queue = models.ForeignKey(Queue, related_name='tickets', null=True, blank=True)
+    queue = models.ForeignKey(Queue, related_name='tickets', null=True, blank=True,
+        on_delete=models.SET_NULL)
     subject = models.CharField(_("subject"), max_length=256)
     description = models.TextField(_("description"))
-    priority = models.CharField(_("priority"), max_length=32, choices=PRIORITIES,
-        default=MEDIUM)
+    priority = models.CharField(_("priority"), max_length=32, choices=PRIORITIES, default=MEDIUM)
     state = models.CharField(_("state"), max_length=32, choices=STATES, default=NEW)
-    created_at = models.DateTimeField(_("created"), auto_now_add=True)
+    created_at = models.DateTimeField(_("created"), auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(_("modified"), auto_now=True)
-    cc = models.TextField("CC", help_text=_("emails to send a carbon copy to"),
-            blank=True)
+    cc = models.TextField("CC", help_text=_("emails to send a carbon copy to"), blank=True)
+    
+    objects = TicketQuerySet.as_manager()
     
     class Meta:
         ordering = ['-updated_at']
@@ -86,7 +94,7 @@ class Ticket(models.Model):
         emails.append(self.creator.email)
         if self.owner:
             emails.append(self.owner.email)
-        for contact in self.creator.account.contacts.all():
+        for contact in self.creator.contacts.all():
             if self.queue and set(contact.email_usage).union(set(self.queue.notify)):
                 emails.append(contact.email)
         for message in self.messages.distinct('author'):
@@ -137,19 +145,19 @@ class Ticket(models.Model):
     
     def reject(self):
         self.state = Ticket.REJECTED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'updated_at'))
     
     def resolve(self):
         self.state = Ticket.RESOLVED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'updated_at'))
     
     def close(self):
         self.state = Ticket.CLOSED
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'updated_at'))
     
     def take(self, user):
         self.owner = user
-        self.save(update_fields=['state'])
+        self.save(update_fields=('state', 'updated_at'))
 
 
 class Message(models.Model):
@@ -159,7 +167,7 @@ class Message(models.Model):
         related_name='ticket_messages')
     author_name = models.CharField(_("author name"), max_length=256, blank=True)
     content = models.TextField(_("content"))
-    created_on = models.DateTimeField(_("created on"), auto_now_add=True)
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     
     class Meta:
         get_latest_by = 'id'
@@ -191,6 +199,3 @@ class TicketTracker(models.Model):
         unique_together = (
             ('ticket', 'user'),
         )
-
-
-ModelTranslation.register(Queue, ('verbose_name',))

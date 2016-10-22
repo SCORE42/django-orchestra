@@ -3,11 +3,12 @@ from django.utils.translation import ugettext_lazy as _
 from rest_framework import serializers
 
 from .. import settings
-from .options import SoftwareService, SoftwareServiceForm
+from ..forms import SaaSPasswordForm
+from .options import SoftwareService
 
 
-class BSCWForm(SoftwareServiceForm):
-    email = forms.EmailField(label=_("Email"), widget=forms.TextInput(attrs={'size':'40'}))
+class BSCWForm(SaaSPasswordForm):
+    email = forms.EmailField(label=_("Email"), widget=forms.TextInput(attrs={'size': '40'}))
 
 
 class BSCWDataSerializer(serializers.Serializer):
@@ -21,4 +22,4 @@ class BSCWService(SoftwareService):
     serializer = BSCWDataSerializer
     icon = 'orchestra/icons/apps/BSCW.png'
     site_domain = settings.SAAS_BSCW_DOMAIN
-    change_readonly_fileds = ('email',)
+    change_readonly_fields = ('email',)

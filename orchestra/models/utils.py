@@ -1,19 +1,28 @@
 from django.conf import settings
-from django.db.models import loading
-from django.utils import importlib
+from django.core.exceptions import FieldDoesNotExist
+from django.apps import apps
+import importlib
 
 
 def get_model(label, import_module=True):
     app_label, model_name = label.split('.')
-    model = loading.get_model(app_label, model_name)
+    model = apps.get_model(app_label, model_name)
     if model is None:
         # Sometimes the models module is not yet imported
         for app in settings.INSTALLED_APPS:
             if app.endswith(app_label):
                 app_label = app
         importlib.import_module('%s.%s' % (app_label, 'admin'))
-        return loading.get_model(*label.split('.'))
+        return apps.get_model(*label.split('.'))
     return model
+
+
+def has_db_field(obj, field_name):
+    try:
+        obj._meta.get_field(field_name)
+    except FieldDoesNotExist:
+        return False
+    return True
 
 
 def get_field_value(obj, field_name):

@@ -1,14 +1,15 @@
 import datetime
+import importlib
 import inspect
 from functools import wraps
 
 from django.conf import settings
 from django.contrib import admin
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.urlresolvers import reverse
+from django.core.urlresolvers import reverse, NoReverseMatch
 from django.db import models
 from django.shortcuts import redirect
-from django.utils import importlib
+from django.utils import timezone
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
@@ -16,6 +17,7 @@ from orchestra.models.utils import get_field_value
 from orchestra.utils import humanize
 
 from .decorators import admin_field
+from .html import monospace_format, code_format
 
 
 def get_modeladmin(model, import_module=True):
@@ -89,15 +91,20 @@ def action_to_view(action, modeladmin):
 
 
 def change_url(obj):
-    opts = obj._meta
-    view_name = 'admin:%s_%s_change' % (opts.app_label, opts.model_name)
-    return reverse(view_name, args=(obj.pk,))
+    if obj is not None:
+        cls = type(obj)
+        opts = obj._meta
+        if cls is models.DEFERRED:
+            opts = cls.__base__._meta
+        view_name = 'admin:%s_%s_change' % (opts.app_label, opts.model_name)
+        return reverse(view_name, args=(obj.pk,))
+    raise NoReverseMatch
 
 
 @admin_field
 def admin_link(*args, **kwargs):
     instance = args[-1]
-    if kwargs['field'] in ['id', 'pk', '__str__']:
+    if kwargs['field'] in ('id', 'pk', '__str__'):
         obj = instance
     else:
         try:
@@ -106,11 +113,21 @@ def admin_link(*args, **kwargs):
             return '---'
     if not getattr(obj, 'pk', None):
         return '---'
-    url = change_url(obj)
+    display = kwargs.get('display')
+    if display:
+        display = getattr(obj, display, display)
+    else:
+        display = obj
+    try:
+        url = change_url(obj)
+    except NoReverseMatch:
+        # Does not has admin
+        return str(display)
     extra = ''
     if kwargs['popup']:
         extra = 'onclick="return showAddAnotherPopup(this);"'
-    return '<a href="%s" %s>%s</a>' % (url, extra, obj)
+    title = "Change %s" % obj._meta.verbose_name
+    return mark_safe('<a href="%s" title="%s" %s>%s</a>' % (url, title, extra, display))
 
 
 @admin_field
@@ -129,16 +146,19 @@ def admin_colored(*args, **kwargs):
 @admin_field
 def admin_date(*args, **kwargs):
     instance = args[-1]
-    value = get_field_value(instance, kwargs['field'])
-    if not value:
+    date = get_field_value(instance, kwargs['field'])
+    if not date:
         return kwargs.get('default', '')
-    if isinstance(value, datetime.datetime):
-        natural = humanize.naturaldatetime(value)
+    if isinstance(date, datetime.datetime):
+        natural = humanize.naturaldatetime(date)
     else:
-        natural = humanize.naturaldate(value)
-    return '<span title="{0}">{1}</span>'.format(
-        escape(str(value)), escape(natural),
-    )
+        natural = humanize.naturaldate(date)
+    if hasattr(date, 'hour'):
+        date = timezone.localtime(date)
+        date = date.strftime("%Y-%m-%d %H:%M:%S %Z")
+    else:
+        date = date.strftime("%Y-%m-%d")
+    return '<span title="{0}">{1}</span>'.format(date, escape(natural))
 
 
 def get_object_from_url(modeladmin, request):
@@ -148,3 +168,18 @@ def get_object_from_url(modeladmin, request):
         return None
     else:
         return modeladmin.model.objects.get(pk=object_id)
+
+
+def display_mono(field):
+    def display(self, log):
+        content = getattr(log, field)
+        return monospace_format(escape(content))
+    display.short_description = field
+    return display
+
+
+def display_code(field):
+    def display(self, log):
+        return code_format(getattr(log, field))
+    display.short_description = field
+    return display
